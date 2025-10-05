@@ -1,10 +1,10 @@
-ï»¿/*  =========================
-    miam9 â€” Suggestions & Courses
-    - Scan + OFF (photo) + Stock SQLite âœ…
-    - Recettes auto-suggÃ©rÃ©es selon le stock âœ…
-    - Portions 1..6 âœ…
-    - Onglet Courses (ingrÃ©dients manquants) âœ…
-    - Build CI Android inchangÃ© âœ…
+/*  =========================
+    miam9 — Suggestions & Courses
+    - Scan + OFF (photo) + Stock SQLite ?
+    - Recettes auto-suggérées selon le stock ?
+    - Portions 1..6 ?
+    - Onglet Courses (ingrédients manquants) ?
+    - Build CI Android inchangé ?
    ========================= */
 
 import "dart:async";
@@ -57,7 +57,7 @@ class _Miam9AppState extends State<Miam9App> {
 }
 
 /* ======================
-   ModÃ¨les & base de donnÃ©es
+   Modèles & base de données
    ====================== */
 
 class Product {
@@ -66,7 +66,7 @@ class Product {
   final String name;
   final String brand;
   final String unit;     // "pcs", "g", "kg", "ml", "L"
-  final int quantity;    // nombre ou quantitÃ© (arrondi au plus proche)
+  final int quantity;    // nombre ou quantité (arrondi au plus proche)
   final String? imageUrl;
   final int createdAtMs;
 
@@ -138,7 +138,7 @@ class RecipeItem {
   final int? id;
   final int recipeId;
   final int productId;
-  final int qty; // pour les recettes crÃ©Ã©es Ã  la main (inchangÃ©)
+  final int qty; // pour les recettes créées à la main (inchangé)
   RecipeItem({this.id, required this.recipeId, required this.productId, required this.qty});
   Map<String, Object?> toMap() => {"id": id, "recipeId": recipeId, "productId": productId, "qty": qty};
   static RecipeItem fromMap(Map<String, Object?> m) => RecipeItem(
@@ -335,7 +335,7 @@ class InventoryDb {
     await db.delete("shopping_items", where: "checked = 1");
   }
 
-  // RECIPES (manuelles, conservÃ©es)
+  // RECIPES (manuelles, conservées)
   Future<List<Recipe>> recipes() async {
     final db = await database;
     final rows = await db.query("recipes", orderBy: "name COLLATE NOCASE");
@@ -377,7 +377,7 @@ class InventoryDb {
 }
 
 /* ======================
-   OFF autofill (nom, marque, image, unitÃ©)
+   OFF autofill (nom, marque, image, unité)
    ====================== */
 class OffAutofill {
   final String name;
@@ -405,7 +405,8 @@ class OffClient {
       final qLower = q.toLowerCase();
       if (qLower.contains("kg")) unit = "kg";
       else if (qLower.contains("g")) unit = "g";
-      else if (qLower.contains("l")) || qLower.contains("ml"); // we keep unit=pcs unless L/ml for info
+      else if (qLower.contains("ml")) unit = "ml";
+      else if (qLower.contains("l")) unit = "L"; // we keep unit=pcs unless L/ml for info
       return OffAutofill(name: name, brand: brand, unit: unit, imageUrl: image.isEmpty ? null : image);
     } catch (_) {
       return null;
@@ -414,81 +415,81 @@ class OffClient {
 }
 
 /* ======================
-   Suggestions de recettes (catalogue embarquÃ©)
+   Suggestions de recettes (catalogue embarqué)
    ====================== */
 
 class IngredientNeed {
-  final List<String> keywords; // ex: ["pÃ¢te","spaghetti","penne"]
-  final double qty;            // quantitÃ© pour servingsBase (en "unit")
+  final List<String> keywords; // ex: ["pâte","spaghetti","penne"]
+  final double qty;            // quantité pour servingsBase (en "unit")
   final String unit;           // "pcs","g","kg","ml","L"
-  final bool optional;         // ingrÃ©dients optionnels (ex. herbes)
+  final bool optional;         // ingrédients optionnels (ex. herbes)
   const IngredientNeed(this.keywords, this.qty, this.unit, {this.optional = false});
 }
 
 class RecipeTemplate {
   final String name;
-  final int servingsBase;                // nombre de personnes pour lequel qty est dÃ©finie
+  final int servingsBase;                // nombre de personnes pour lequel qty est définie
   final List<IngredientNeed> needs;
   const RecipeTemplate(this.name, this.servingsBase, this.needs);
 }
 
-/* ðŸ”¸ Pack de base ~25 recettes (extensible)
-   Tu peux en ajouter trÃ¨s facilement : mÃªme structure.
+/* ?? Pack de base ~25 recettes (extensible)
+   Tu peux en ajouter très facilement : même structure.
    Astuce: keywords multi-synonymes pour matcher le nom produit. */
 const List<RecipeTemplate> kTemplates = [
-  RecipeTemplate("PÃ¢tes Ã  la tomate", 2, [
-    IngredientNeed(["pÃ¢te","spaghetti","penne","coquillettes"], 200, "g"),
+  RecipeTemplate("Pâtes à la tomate", 2, [
+    IngredientNeed(["pâte","spaghetti","penne","coquillettes"], 200, "g"),
     IngredientNeed(["tomate","passata","coulis","sauce tomate"], 200, "g"),
     IngredientNeed(["oignon"], 1, "pcs", optional: true),
     IngredientNeed(["ail"], 1, "pcs", optional: true),
   ]),
   RecipeTemplate("Omelette", 2, [
-    IngredientNeed(["oeuf","Å“uf"], 4, "pcs"),
-    IngredientNeed(["lait","crÃ¨me"], 50, "ml", optional: true),
-    IngredientNeed(["fromage","gruyÃ¨re","emmental"], 40, "g", optional: true),
+    IngredientNeed(["oeuf","œuf"], 4, "pcs"),
+    IngredientNeed(["lait","crème"], 50, "ml", optional: true),
+    IngredientNeed(["fromage","gruyère","emmental"], 40, "g", optional: true),
   ]),
-  RecipeTemplate("CrÃªpes", 2, [
+  RecipeTemplate("Crêpes", 2, [
     IngredientNeed(["farine"], 150, "g"),
     IngredientNeed(["lait"], 300, "ml"),
-    IngredientNeed(["oeuf","Å“uf"], 2, "pcs"),
+    IngredientNeed(["oeuf","œuf"], 2, "pcs"),
   ]),
   RecipeTemplate("Riz au lait", 2, [
     IngredientNeed(["riz rond","riz dessert","riz"], 120, "g"),
     IngredientNeed(["lait"], 600, "ml"),
     IngredientNeed(["sucre"], 40, "g"),
   ]),
-  RecipeTemplate("Salade thon maÃ¯s", 2, [
+  RecipeTemplate("Salade thon maïs", 2, [
     IngredientNeed(["thon"], 140, "g"),
-    IngredientNeed(["maÃ¯s"], 140, "g"),
-    IngredientNeed(["salade","laitue","mÃ¢che"], 100, "g", optional: true),
+    IngredientNeed(["maïs"], 140, "g"),
+    IngredientNeed(["salade","laitue","mâche"], 100, "g", optional: true),
   ]),
   RecipeTemplate("Poulet curry riz", 2, [
     IngredientNeed(["poulet"], 300, "g"),
     IngredientNeed(["riz"], 140, "g"),
-    IngredientNeed(["crÃ¨me","lait coco","coco"], 150, "ml"),
+    IngredientNeed(["crème","lait coco","coco"], 150, "ml"),
     IngredientNeed(["curry"], 10, "g", optional: true),
   ]),
-  RecipeTemplate("Soupe de lÃ©gumes", 2, [
+  RecipeTemplate("Soupe de légumes", 2, [
     IngredientNeed(["carotte"], 200, "g"),
     IngredientNeed(["pomme de terre","patate"], 200, "g"),
     IngredientNeed(["poireau","courgette","oignon"], 150, "g"),
   ]),
-  RecipeTemplate("PÃ¢tes carbonara (FR style)", 2, [
-    IngredientNeed(["pÃ¢te","spaghetti","penne"], 200, "g"),
+  RecipeTemplate("Pâtes carbonara (FR style)", 2, [
+    IngredientNeed(["pâte","spaghetti","penne"], 200, "g"),
     IngredientNeed(["lardons","bacon"], 150, "g"),
-    IngredientNeed(["crÃ¨me"], 150, "ml"),
+    IngredientNeed(["crème"], 150, "ml"),
     IngredientNeed(["fromage","parmesan"], 40, "g", optional: true),
   ]),
   RecipeTemplate("Gratin dauphinois", 2, [
     IngredientNeed(["pomme de terre","patate"], 600, "g"),
-    IngredientNeed(["crÃ¨me","lait"], 200, "ml"),
+    IngredientNeed(["crème","lait"], 200, "ml"),
     IngredientNeed(["ail"], 1, "pcs", optional: true),
     IngredientNeed(["fromage"], 50, "g", optional: true),
   ]),
   RecipeTemplate("Salade de riz", 2, [
     IngredientNeed(["riz"], 150, "g"),
     IngredientNeed(["thon","jambon"], 120, "g", optional: true),
-    IngredientNeed(["maÃ¯s","poivron","olives"], 120, "g", optional: true),
+    IngredientNeed(["maïs","poivron","olives"], 120, "g", optional: true),
   ]),
   // ... (tu pourras facilement en ajouter d'autres ou charger un pack JSON)
 ];
@@ -522,7 +523,7 @@ double _scaleRequired(double baseQty, int baseServ, int people) {
 
 class _UseProduct {
   final int productId;
-  final int qtyToUse; // en unitÃ© de stockage du produit
+  final int qtyToUse; // en unité de stockage du produit
   const _UseProduct({required this.productId, required this.qtyToUse});
 }
 
@@ -532,7 +533,7 @@ class SuggestResult {
   final int ok;
   final int total;
   final List<String> missingLabels; // ex: "oeuf x2", "lait 200ml"
-  final List<_UseProduct> uses;     // ce qu'on va dÃ©crÃ©menter si on cuisine
+  final List<_UseProduct> uses;     // ce qu'on va décrémenter si on cuisine
   SuggestResult({
     required this.template,
     required this.people,
@@ -546,7 +547,7 @@ class SuggestResult {
 }
 
 class SuggestEngine {
-  // Calcule la suggestion pour un template et un stock donnÃ©
+  // Calcule la suggestion pour un template et un stock donné
   static SuggestResult evaluate({
     required RecipeTemplate tpl,
     required List<Product> stock,
@@ -560,7 +561,7 @@ class SuggestEngine {
 
     for (final need in tpl.needs) {
       if (need.optional) {
-        // on ignore dans le score, mais on peut consommer si prÃ©sent
+        // on ignore dans le score, mais on peut consommer si présent
         final match = views.where((v) => v.matches(need.keywords)).toList();
         if (match.isNotEmpty) {
           final best = match..sort((a,b) => b.product.quantity.compareTo(a.product.quantity));
@@ -585,7 +586,7 @@ class SuggestEngine {
       final best = match..sort((a,b) => b.product.quantity.compareTo(a.product.quantity));
       final picked = best.first.product;
 
-      // On suppose mÃªme unitÃ© logique (pcs/g/mlâ€¦). Pour un app plus avancÃ©e, prÃ©voir conversions.
+      // On suppose même unité logique (pcs/g/ml…). Pour un app plus avancée, prévoir conversions.
       final req = _scaleRequired(need.qty, tpl.servingsBase, people);
       final reqInt = req.ceil();
       if (picked.quantity >= reqInt) {
@@ -617,7 +618,7 @@ class SuggestEngine {
     for (final t in templates) {
       out.add(evaluate(tpl: t, stock: stock, people: people));
     }
-    // Tri: cuisinnables d'abord, sinon score dÃ©croissant
+    // Tri: cuisinnables d'abord, sinon score décroissant
     out.sort((a,b) {
       if (a.cookable && !b.cookable) return -1;
       if (!a.cookable && b.cookable) return 1;
@@ -628,7 +629,7 @@ class SuggestEngine {
 }
 
 /* ======================
-   UI â€” Stock (identique Ã  ta base stable)
+   UI — Stock (identique à ta base stable)
    ====================== */
 
 class InventoryPage extends StatefulWidget {
@@ -661,7 +662,7 @@ class _InventoryPageState extends State<InventoryPage> {
         await _db.adjustQuantity(id: existing.id!, delta: delta);
         _reload();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("QuantitÃ© mise Ã  jour (${delta >= 0 ? "+" : ""}$delta)")));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Quantité mise à jour (${delta >= 0 ? "+" : ""}$delta)")));
       }
       return;
     }
@@ -683,7 +684,7 @@ class _InventoryPageState extends State<InventoryPage> {
       await _db.upsert(created);
       _reload();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Produit ajoutÃ© au stock")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Produit ajouté au stock")));
     }
   }
 
@@ -734,7 +735,7 @@ class _InventoryPageState extends State<InventoryPage> {
                     return ListTile(
                       leading: leading,
                       title: Text(p.name),
-                      subtitle: Text("${p.brand.isNotEmpty ? "${p.brand} â€¢ " : ""}${p.barcode}"),
+                      subtitle: Text("${p.brand.isNotEmpty ? "${p.brand} • " : ""}${p.barcode}"),
                       trailing: PopupMenuButton<String>(
                         onSelected: (value) async {
                           switch (value) {
@@ -771,7 +772,7 @@ class _InventoryPageState extends State<InventoryPage> {
 }
 
 /* ======================
-   UI â€” Suggestions (onglet Recettes)
+   UI — Suggestions (onglet Recettes)
    ====================== */
 
 class SuggestionsPage extends StatefulWidget {
@@ -792,7 +793,7 @@ class _SuggestionsPageState extends State<SuggestionsPage> {
   Future<void> _cook(SuggestResult res) async {
     await _db.cookUsing(uses: res.uses);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("CuisinÃ©: ${res.template.name} pour ${res.people}")));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Cuisiné: ${res.template.name} pour ${res.people}")));
     _recompute();
   }
 
@@ -801,7 +802,7 @@ class _SuggestionsPageState extends State<SuggestionsPage> {
       // m ex: "oeuf x2" ou "lait 200ml"
       final parts = m.split(" ");
       final name = parts.first;
-      // parse quantitÃ© si possible
+      // parse quantité si possible
       int qty = 1;
       String unit = "pcs";
       final last = parts.isNotEmpty ? parts.last : "";
@@ -818,17 +819,17 @@ class _SuggestionsPageState extends State<SuggestionsPage> {
       await _db.addShopping(name, unit: unit, qty: qty);
     }
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("AjoutÃ© aux courses")));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Ajouté aux courses")));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Recettes suggÃ©rÃ©es"),
+        title: const Text("Recettes suggérées"),
         actions: [
           IconButton(
-            tooltip: "RafraÃ®chir",
+            tooltip: "Rafraîchir",
             onPressed: _recompute,
             icon: const Icon(Icons.refresh),
           ),
@@ -867,15 +868,15 @@ class _SuggestionsPageState extends State<SuggestionsPage> {
                   children: [
                     _SectionHeader(title: "Cuisinables maintenant", count: cookables.length, icon: Icons.check_circle),
                     if (cookables.isEmpty)
-                      const ListTile(title: Text("Rien pour lâ€™instant â€” scanne un produit ou baisse le nombre de portions.")),
+                      const ListTile(title: Text("Rien pour l’instant — scanne un produit ou baisse le nombre de portions.")),
                     ...cookables.map((r) => _RecipeCard(
                       res: r,
                       onCook: () => _cook(r),
-                      onAddMissing: () {}, // rien Ã  ajouter (complet)
+                      onAddMissing: () {}, // rien à ajouter (complet)
                     )),
 
                     const Divider(height: 24),
-                    _SectionHeader(title: "Presque (ingrÃ©dients manquants)", count: almost.length, icon: Icons.hourglass_bottom),
+                    _SectionHeader(title: "Presque (ingrédients manquants)", count: almost.length, icon: Icons.hourglass_bottom),
                     ...almost.map((r) => _RecipeCard(
                       res: r,
                       onCook: null,
@@ -922,13 +923,13 @@ class _RecipeCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("${res.template.name} â€” ${res.people} pers.", style: Theme.of(context).textTheme.titleMedium),
+            Text("${res.template.name} — ${res.people} pers.", style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
             Row(
               children: [
                 Chip(label: Text(badge)),
                 const SizedBox(width: 8),
-                if (res.cookable) const Chip(label: Text("PrÃªt Ã  cuisiner")),
+                if (res.cookable) const Chip(label: Text("Prêt à cuisiner")),
               ],
             ),
             if (!res.cookable) ...[
@@ -955,7 +956,7 @@ class _RecipeCard extends StatelessWidget {
 }
 
 /* ======================
-   UI â€” Courses (onglet)
+   UI — Courses (onglet)
    ====================== */
 
 class ShoppingPage extends StatefulWidget {
@@ -1150,11 +1151,11 @@ class _ProductDialogState extends State<ProductDialog> {
             TextFormField(controller: _brandCtrl, decoration: const InputDecoration(labelText: "Marque (optionnel)")),
             const SizedBox(height: 8),
             Row(children: [
-              Expanded(child: TextFormField(controller: _unitCtrl, decoration: const InputDecoration(labelText: "UnitÃ© (pcs, kg, etc.)"))),
+              Expanded(child: TextFormField(controller: _unitCtrl, decoration: const InputDecoration(labelText: "Unité (pcs, kg, etc.)"))),
               const SizedBox(width: 12),
               Expanded(
                 child: TextFormField(
-                  controller: _qtyCtrl, decoration: const InputDecoration(labelText: "QuantitÃ©"),
+                  controller: _qtyCtrl, decoration: const InputDecoration(labelText: "Quantité"),
                   keyboardType: TextInputType.number,
                   validator: (v) { final n = int.tryParse(v ?? ""); if (n == null || n < 0) return "Nombre entier requis"; return null; },
                 ),
@@ -1205,7 +1206,7 @@ class _QuantitySheetState extends State<QuantitySheet> {
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text("Mettre Ã  jour: ${widget.name}", style: Theme.of(context).textTheme.titleLarge),
+            Text("Mettre à jour: ${widget.name}", style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 12),
             Row(children: [
               IconButton(onPressed: () => setState(() => _delta = (_delta - 1).clamp(1, 9999)), icon: const Icon(Icons.remove_circle_outline)),
@@ -1229,6 +1230,32 @@ class _QuantitySheetState extends State<QuantitySheet> {
           ]),
         ),
       ),
+    );
+  }
+}
+class _TextPrompt extends StatefulWidget {
+  final String title;
+  final String? initial;
+  final String? hint;
+  const _TextPrompt({required this.title, this.initial, this.hint, super.key});
+  @override
+  State<_TextPrompt> createState() => _TextPromptState();
+}
+class _TextPromptState extends State<_TextPrompt> {
+  final _c = TextEditingController();
+  @override
+  void initState() { super.initState(); _c.text = widget.initial ?? ""; }
+  @override
+  void dispose() { _c.dispose(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.title),
+      content: TextField(controller: _c, decoration: InputDecoration(hintText: widget.hint ?? "")),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
+        FilledButton(onPressed: () => Navigator.pop(context, _c.text.trim()), child: const Text("OK")),
+      ],
     );
   }
 }
