@@ -696,34 +696,85 @@ class _SectionHeader extends StatelessWidget { final String title; final int cou
   @override Widget build(BuildContext context) { return ListTile(leading: Icon(icon), title: Text(title, style: Theme.of(context).textTheme.titleMedium), trailing: Text("$count")); }
 }
 class _RecipeCard extends StatelessWidget {
-  final SuggestResult res; final VoidCallback? onCook; final VoidCallback? onAddMissing;
+  final SuggestResult res; 
+  final VoidCallback? onCook; 
+  final VoidCallback? onAddMissing;
   const _RecipeCard({required this.res, this.onCook, this.onAddMissing, super.key});
-  @override Widget build(BuildContext context) {
-    final badge = "${res.ok}/${res.total} ok";
+
+  @override
+  Widget build(BuildContext context) {
+    // Liste compacte des besoins
+    final needs = <Widget>[];
+    if (res.missingLabels.isEmpty) {
+      needs.add(const ListTile(
+        dense: true,
+        leading: Icon(Icons.check_circle, size: 20),
+        title: Text("Tous les ingrédients sont disponibles"),
+      ));
+    } else {
+      needs.add(const Padding(
+        padding: EdgeInsets.only(bottom: 4, left: 12, right: 12),
+        child: Text("Manquants :", style: TextStyle(fontWeight: FontWeight.w600)),
+      ));
+      for (final m in res.missingLabels) {
+        needs.add(ListTile(
+          dense: true,
+          leading: const Icon(Icons.shopping_cart, size: 20),
+          title: Text(m),
+        ));
+      }
+    }
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Padding(
         padding: const EdgeInsets.all(12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text("${res.template.name} — ${res.people} pers.", style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 4),
-          Row(children: [Chip(label: Text(badge)), const SizedBox(width: 8), if (res.cookable) const Chip(label: Text("Prêt à cuisiner"))]),
-          if (!res.cookable) ...[
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Titre
+            Text("${res.template.name} — ${res.people} pers.", style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            // Statut
+            Row(
+              children: [
+                Icon(res.cookable ? Icons.check_circle : Icons.hourglass_bottom, size: 18),
+                const SizedBox(width: 6),
+                Text(res.cookable ? "Cuisinable maintenant" : "${res.ok}/${res.total} ingrédients OK"),
+              ],
+            ),
             const SizedBox(height: 8),
-            Wrap(spacing: 8, runSpacing: 8, children: res.missingLabels.map((m) => Chip(avatar: const Icon(Icons.shopping_cart, size: 16), label: Text(m))).toList()),
+
+            // Liste des besoins / manquants
+            ...needs,
+
+            const SizedBox(height: 8),
+            // Barre d'action simplifiée
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: res.cookable ? onCook : null,
+                    icon: const Icon(Icons.remove),
+                    label: const Text("Consommer"),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: (res.missingLabels.isNotEmpty && onAddMissing != null) ? onAddMissing : null,
+                    icon: const Icon(Icons.add),
+                    label: const Text("Courses"),
+                  ),
+                ),
+              ],
+            ),
           ],
-          const SizedBox(height: 8),
-          Row(children: [
-            if (res.cookable) FilledButton.icon(onPressed: onCook, icon: const Icon(Icons.restaurant), label: const Text("Cuisiner")),
-            const Spacer(),
-            if (onAddMissing != null) OutlinedButton.icon(onPressed: onAddMissing, icon: const Icon(Icons.add_shopping_cart), label: const Text("Ajouter aux courses")),
-          ]),
-        ]),
+        ),
       ),
     );
   }
 }
-
 /* ======================
    UI — Courses
    ====================== */
@@ -979,4 +1030,5 @@ class _ScanPageState extends State<ScanPage> {
     );
   }
 }
+
 
