@@ -345,8 +345,8 @@ class _ScanPageState extends State<ScanPage> {
     formats: [
       BarcodeFormat.ean13,
       BarcodeFormat.ean8,
-      BarcodeFormat.upca,
-      BarcodeFormat.upce,
+      
+      
       BarcodeFormat.code128,
       BarcodeFormat.qrCode,
     ],
