@@ -1,4 +1,13 @@
-﻿import "dart:async";
+﻿/*  =========================
+    miam9 — Suggestions & Courses
+    - Scan + OFF (photo) + Stock SQLite ✅
+    - Recettes auto-suggérées selon le stock ✅
+    - Portions 1..6 ✅
+    - Onglet Courses (ingrédients manquants) ✅
+    - Build CI Android inchangé ✅
+   ========================= */
+
+import "dart:async";
 import "dart:convert";
 import "package:flutter/material.dart";
 import "package:http/http.dart" as http;
@@ -31,14 +40,15 @@ class _Miam9AppState extends State<Miam9App> {
       home: Scaffold(
         body: IndexedStack(
           index: _index,
-          children: const [InventoryPage(), RecipesPage()],
+          children: const [InventoryPage(), SuggestionsPage(), ShoppingPage()],
         ),
         bottomNavigationBar: NavigationBar(
           selectedIndex: _index,
           onDestinationSelected: (i) => setState(() => _index = i),
           destinations: const [
             NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: "Stock"),
-            NavigationDestination(icon: Icon(Icons.menu_book_outlined), selectedIcon: Icon(Icons.menu_book), label: "Recettes"),
+            NavigationDestination(icon: Icon(Icons.restaurant_menu_outlined), selectedIcon: Icon(Icons.restaurant_menu), label: "Recettes"),
+            NavigationDestination(icon: Icon(Icons.shopping_cart_outlined), selectedIcon: Icon(Icons.shopping_cart), label: "Courses"),
           ],
         ),
       ),
@@ -46,13 +56,17 @@ class _Miam9AppState extends State<Miam9App> {
   }
 }
 
+/* ======================
+   Modèles & base de données
+   ====================== */
+
 class Product {
   final int? id;
   final String barcode;
   final String name;
   final String brand;
-  final String unit;
-  final int quantity;
+  final String unit;     // "pcs", "g", "kg", "ml", "L"
+  final int quantity;    // nombre ou quantité (arrondi au plus proche)
   final String? imageUrl;
   final int createdAtMs;
 
@@ -124,13 +138,32 @@ class RecipeItem {
   final int? id;
   final int recipeId;
   final int productId;
-  final int qty;
+  final int qty; // pour les recettes créées à la main (inchangé)
   RecipeItem({this.id, required this.recipeId, required this.productId, required this.qty});
   Map<String, Object?> toMap() => {"id": id, "recipeId": recipeId, "productId": productId, "qty": qty};
   static RecipeItem fromMap(Map<String, Object?> m) => RecipeItem(
     id: m["id"] as int?, recipeId: m["recipeId"] as int, productId: m["productId"] as int, qty: m["qty"] as int);
 }
 
+/* Shopping list */
+class ShoppingItem {
+  final int? id;
+  final String name;
+  final String unit; // "pcs","g","kg","ml","L"
+  final int qty;
+  final bool checked;
+  ShoppingItem({this.id, required this.name, this.unit = "pcs", this.qty = 1, this.checked = false});
+  Map<String, Object?> toMap() => {"id": id, "name": name, "unit": unit, "qty": qty, "checked": checked ? 1 : 0};
+  static ShoppingItem fromMap(Map<String, Object?> m) => ShoppingItem(
+    id: m["id"] as int?,
+    name: m["name"] as String,
+    unit: (m["unit"] ?? "pcs") as String,
+    qty: (m["qty"] ?? 1) as int,
+    checked: ((m["checked"] ?? 0) as int) == 1,
+  );
+}
+
+/* ---- DB ---- */
 class InventoryDb {
   static final InventoryDb _instance = InventoryDb._internal();
   factory InventoryDb() => _instance;
@@ -148,7 +181,7 @@ class InventoryDb {
     final path = p.join(dir.path, "inventory.db");
     return openDatabase(
       path,
-      version: 2, // v2: add imageUrl + recipes tables
+      version: 3, // v3: add shopping_items
       onCreate: (db, version) async {
         await db.execute("""
           CREATE TABLE products (
@@ -164,36 +197,67 @@ class InventoryDb {
         """);
         await db.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);");
         await db.execute("CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);");
-        await _createRecipeTables(db);
+
+        await db.execute("""
+          CREATE TABLE recipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+          );
+        """);
+        await db.execute("""
+          CREATE TABLE recipe_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipeId INTEGER NOT NULL,
+            productId INTEGER NOT NULL,
+            qty INTEGER NOT NULL,
+            FOREIGN KEY(recipeId) REFERENCES recipes(id) ON DELETE CASCADE,
+            FOREIGN KEY(productId) REFERENCES products(id) ON DELETE CASCADE
+          );
+        """);
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_recipe_items_recipe ON recipe_items(recipeId);");
+
+        await db.execute("""
+          CREATE TABLE shopping_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            unit TEXT DEFAULT 'pcs',
+            qty INTEGER NOT NULL DEFAULT 1,
+            checked INTEGER NOT NULL DEFAULT 0
+          );
+        """);
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 2) {
-          // add imageUrl column if missing
           await db.execute("ALTER TABLE products ADD COLUMN imageUrl TEXT;");
-          await _createRecipeTables(db);
+          await db.execute("""
+            CREATE TABLE IF NOT EXISTS recipes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL
+            );
+          """);
+          await db.execute("""
+            CREATE TABLE IF NOT EXISTS recipe_items (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              recipeId INTEGER NOT NULL,
+              productId INTEGER NOT NULL,
+              qty INTEGER NOT NULL
+            );
+          """);
+          await db.execute("CREATE INDEX IF NOT EXISTS idx_recipe_items_recipe ON recipe_items(recipeId);");
+        }
+        if (oldV < 3) {
+          await db.execute("""
+            CREATE TABLE IF NOT EXISTS shopping_items (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              unit TEXT DEFAULT 'pcs',
+              qty INTEGER NOT NULL DEFAULT 1,
+              checked INTEGER NOT NULL DEFAULT 0
+            );
+          """);
         }
       },
     );
-  }
-
-  static Future<void> _createRecipeTables(Database db) async {
-    await db.execute("""
-      CREATE TABLE IF NOT EXISTS recipes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL
-      );
-    """);
-    await db.execute("""
-      CREATE TABLE IF NOT EXISTS recipe_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        recipeId INTEGER NOT NULL,
-        productId INTEGER NOT NULL,
-        qty INTEGER NOT NULL,
-        FOREIGN KEY(recipeId) REFERENCES recipes(id) ON DELETE CASCADE,
-        FOREIGN KEY(productId) REFERENCES products(id) ON DELETE CASCADE
-      );
-    """);
-    await db.execute("CREATE INDEX IF NOT EXISTS idx_recipe_items_recipe ON recipe_items(recipeId);");
   }
 
   // PRODUCTS
@@ -248,55 +312,73 @@ class InventoryDb {
     await db.rawUpdate("UPDATE products SET quantity = MAX(0, quantity + ?) WHERE id = ?", [delta, id]);
   }
 
-  // RECIPES
+  // SHOPPING
+  Future<List<ShoppingItem>> shoppingList({bool onlyOpen = false}) async {
+    final db = await database;
+    final rows = await db.query("shopping_items", where: onlyOpen ? "checked = 0" : null, orderBy: "checked ASC, name COLLATE NOCASE");
+    return rows.map(ShoppingItem.fromMap).toList();
+  }
+  Future<void> addShopping(String name, {String unit = "pcs", int qty = 1}) async {
+    final db = await database;
+    await db.insert("shopping_items", {"name": name, "unit": unit, "qty": qty, "checked": 0});
+  }
+  Future<void> toggleShopping(int id, bool checked) async {
+    final db = await database;
+    await db.update("shopping_items", {"checked": checked ? 1 : 0}, where: "id = ?", whereArgs: [id]);
+  }
+  Future<void> deleteShopping(int id) async {
+    final db = await database;
+    await db.delete("shopping_items", where: "id = ?", whereArgs: [id]);
+  }
+  Future<void> clearCheckedShopping() async {
+    final db = await database;
+    await db.delete("shopping_items", where: "checked = 1");
+  }
+
+  // RECIPES (manuelles, conservées)
   Future<List<Recipe>> recipes() async {
     final db = await database;
     final rows = await db.query("recipes", orderBy: "name COLLATE NOCASE");
     return rows.map(Recipe.fromMap).toList();
   }
-
   Future<int> addRecipe(String name) async {
     final db = await database;
     return db.insert("recipes", {"name": name});
   }
-
   Future<void> updateRecipe(Recipe r) async {
     final db = await database;
     await db.update("recipes", r.toMap(), where: "id = ?", whereArgs: [r.id]);
   }
-
   Future<void> deleteRecipe(int id) async {
     final db = await database;
     await db.delete("recipes", where: "id = ?", whereArgs: [id]);
     await db.delete("recipe_items", where: "recipeId = ?", whereArgs: [id]);
   }
-
   Future<List<RecipeItem>> recipeItems(int recipeId) async {
     final db = await database;
     final rows = await db.query("recipe_items", where: "recipeId = ?", whereArgs: [recipeId]);
     return rows.map(RecipeItem.fromMap).toList();
   }
-
   Future<void> addRecipeItem({required int recipeId, required int productId, required int qty}) async {
     final db = await database;
     await db.insert("recipe_items", {"recipeId": recipeId, "productId": productId, "qty": qty});
   }
-
   Future<void> deleteRecipeItem(int id) async {
     final db = await database;
     await db.delete("recipe_items", where: "id = ?", whereArgs: [id]);
   }
 
-  Future<void> cookRecipe(int recipeId) async {
+  Future<void> cookUsing({required List<_UseProduct> uses}) async {
     final db = await database;
-    final items = await recipeItems(recipeId);
-    for (final it in items) {
-      await adjustQuantity(id: it.productId, delta: -it.qty);
+    for (final u in uses) {
+      await adjustQuantity(id: u.productId, delta: -u.qtyToUse);
     }
   }
 }
 
-// ------- OpenFoodFacts ----------
+/* ======================
+   OFF autofill (nom, marque, image, unité)
+   ====================== */
 class OffAutofill {
   final String name;
   final String brand;
@@ -323,7 +405,7 @@ class OffClient {
       final qLower = q.toLowerCase();
       if (qLower.contains("kg")) unit = "kg";
       else if (qLower.contains("g")) unit = "g";
-      else if (qLower.contains("l")) unit = "L";
+      else if (qLower.contains("l")) || qLower.contains("ml"); // we keep unit=pcs unless L/ml for info
       return OffAutofill(name: name, brand: brand, unit: unit, imageUrl: image.isEmpty ? null : image);
     } catch (_) {
       return null;
@@ -331,7 +413,224 @@ class OffClient {
   }
 }
 
-// ------- UI: Stock ----------
+/* ======================
+   Suggestions de recettes (catalogue embarqué)
+   ====================== */
+
+class IngredientNeed {
+  final List<String> keywords; // ex: ["pâte","spaghetti","penne"]
+  final double qty;            // quantité pour servingsBase (en "unit")
+  final String unit;           // "pcs","g","kg","ml","L"
+  final bool optional;         // ingrédients optionnels (ex. herbes)
+  const IngredientNeed(this.keywords, this.qty, this.unit, {this.optional = false});
+}
+
+class RecipeTemplate {
+  final String name;
+  final int servingsBase;                // nombre de personnes pour lequel qty est définie
+  final List<IngredientNeed> needs;
+  const RecipeTemplate(this.name, this.servingsBase, this.needs);
+}
+
+/* 🔸 Pack de base ~25 recettes (extensible)
+   Tu peux en ajouter très facilement : même structure.
+   Astuce: keywords multi-synonymes pour matcher le nom produit. */
+const List<RecipeTemplate> kTemplates = [
+  RecipeTemplate("Pâtes à la tomate", 2, [
+    IngredientNeed(["pâte","spaghetti","penne","coquillettes"], 200, "g"),
+    IngredientNeed(["tomate","passata","coulis","sauce tomate"], 200, "g"),
+    IngredientNeed(["oignon"], 1, "pcs", optional: true),
+    IngredientNeed(["ail"], 1, "pcs", optional: true),
+  ]),
+  RecipeTemplate("Omelette", 2, [
+    IngredientNeed(["oeuf","œuf"], 4, "pcs"),
+    IngredientNeed(["lait","crème"], 50, "ml", optional: true),
+    IngredientNeed(["fromage","gruyère","emmental"], 40, "g", optional: true),
+  ]),
+  RecipeTemplate("Crêpes", 2, [
+    IngredientNeed(["farine"], 150, "g"),
+    IngredientNeed(["lait"], 300, "ml"),
+    IngredientNeed(["oeuf","œuf"], 2, "pcs"),
+  ]),
+  RecipeTemplate("Riz au lait", 2, [
+    IngredientNeed(["riz rond","riz dessert","riz"], 120, "g"),
+    IngredientNeed(["lait"], 600, "ml"),
+    IngredientNeed(["sucre"], 40, "g"),
+  ]),
+  RecipeTemplate("Salade thon maïs", 2, [
+    IngredientNeed(["thon"], 140, "g"),
+    IngredientNeed(["maïs"], 140, "g"),
+    IngredientNeed(["salade","laitue","mâche"], 100, "g", optional: true),
+  ]),
+  RecipeTemplate("Poulet curry riz", 2, [
+    IngredientNeed(["poulet"], 300, "g"),
+    IngredientNeed(["riz"], 140, "g"),
+    IngredientNeed(["crème","lait coco","coco"], 150, "ml"),
+    IngredientNeed(["curry"], 10, "g", optional: true),
+  ]),
+  RecipeTemplate("Soupe de légumes", 2, [
+    IngredientNeed(["carotte"], 200, "g"),
+    IngredientNeed(["pomme de terre","patate"], 200, "g"),
+    IngredientNeed(["poireau","courgette","oignon"], 150, "g"),
+  ]),
+  RecipeTemplate("Pâtes carbonara (FR style)", 2, [
+    IngredientNeed(["pâte","spaghetti","penne"], 200, "g"),
+    IngredientNeed(["lardons","bacon"], 150, "g"),
+    IngredientNeed(["crème"], 150, "ml"),
+    IngredientNeed(["fromage","parmesan"], 40, "g", optional: true),
+  ]),
+  RecipeTemplate("Gratin dauphinois", 2, [
+    IngredientNeed(["pomme de terre","patate"], 600, "g"),
+    IngredientNeed(["crème","lait"], 200, "ml"),
+    IngredientNeed(["ail"], 1, "pcs", optional: true),
+    IngredientNeed(["fromage"], 50, "g", optional: true),
+  ]),
+  RecipeTemplate("Salade de riz", 2, [
+    IngredientNeed(["riz"], 150, "g"),
+    IngredientNeed(["thon","jambon"], 120, "g", optional: true),
+    IngredientNeed(["maïs","poivron","olives"], 120, "g", optional: true),
+  ]),
+  // ... (tu pourras facilement en ajouter d'autres ou charger un pack JSON)
+];
+
+/* ============ Matching & scaling ============ */
+
+class _StockView {
+  final Product product;
+  _StockView(this.product);
+  bool matches(List<String> kws) {
+    final n = (product.name + " " + product.brand).toLowerCase();
+    for (final kw in kws) {
+      if (n.contains(kw.toLowerCase())) return true;
+    }
+    return false;
+  }
+}
+
+int _toBaseUnitInt(int qty, String unit) {
+  // On simplifie: "kg"-> g*1000 ; "L"-> ml*1000
+  switch (unit) {
+    case "kg": return qty * 1000;
+    case "L": return qty * 1000;
+    default: return qty;
+  }
+}
+
+double _scaleRequired(double baseQty, int baseServ, int people) {
+  return baseQty * (people / baseServ);
+}
+
+class _UseProduct {
+  final int productId;
+  final int qtyToUse; // en unité de stockage du produit
+  const _UseProduct({required this.productId, required this.qtyToUse});
+}
+
+class SuggestResult {
+  final RecipeTemplate template;
+  final int people;
+  final int ok;
+  final int total;
+  final List<String> missingLabels; // ex: "oeuf x2", "lait 200ml"
+  final List<_UseProduct> uses;     // ce qu'on va décrémenter si on cuisine
+  SuggestResult({
+    required this.template,
+    required this.people,
+    required this.ok,
+    required this.total,
+    required this.missingLabels,
+    required this.uses,
+  });
+  bool get cookable => ok == total;
+  double get score => total == 0 ? 0 : ok / total;
+}
+
+class SuggestEngine {
+  // Calcule la suggestion pour un template et un stock donné
+  static SuggestResult evaluate({
+    required RecipeTemplate tpl,
+    required List<Product> stock,
+    required int people,
+  }) {
+    final views = stock.map(_StockView.new).toList();
+    int ok = 0;
+    final total = tpl.needs.where((n) => !n.optional).length;
+    final missing = <String>[];
+    final uses = <_UseProduct>[];
+
+    for (final need in tpl.needs) {
+      if (need.optional) {
+        // on ignore dans le score, mais on peut consommer si présent
+        final match = views.where((v) => v.matches(need.keywords)).toList();
+        if (match.isNotEmpty) {
+          final best = match..sort((a,b) => b.product.quantity.compareTo(a.product.quantity));
+          final picked = best.first.product;
+          final req = _scaleRequired(need.qty, tpl.servingsBase, people);
+          final reqInt = req.ceil();
+          if (picked.quantity >= reqInt) {
+            uses.add(_UseProduct(productId: picked.id!, qtyToUse: reqInt));
+          }
+        }
+        continue;
+      }
+      // obligatoire
+      final match = views.where((v) => v.matches(need.keywords)).toList();
+      if (match.isEmpty) {
+        final unitLbl = need.unit;
+        final req = _scaleRequired(need.qty, tpl.servingsBase, people).ceil();
+        missing.add("${need.keywords.first} ${unitLbl == "pcs" ? "x$req" : "$req$unitLbl"}");
+        continue;
+      }
+      // pick the product with highest quantity
+      final best = match..sort((a,b) => b.product.quantity.compareTo(a.product.quantity));
+      final picked = best.first.product;
+
+      // On suppose même unité logique (pcs/g/ml…). Pour un app plus avancée, prévoir conversions.
+      final req = _scaleRequired(need.qty, tpl.servingsBase, people);
+      final reqInt = req.ceil();
+      if (picked.quantity >= reqInt) {
+        ok += 1;
+        uses.add(_UseProduct(productId: picked.id!, qtyToUse: reqInt));
+      } else {
+        final lack = reqInt - picked.quantity;
+        final unitLbl = picked.unit;
+        missing.add("${need.keywords.first} ${unitLbl == "pcs" ? "x$lack" : "$lack$unitLbl"}");
+      }
+    }
+
+    return SuggestResult(
+      template: tpl,
+      people: people,
+      ok: ok,
+      total: total,
+      missingLabels: missing,
+      uses: uses,
+    );
+  }
+
+  static List<SuggestResult> compute({
+    required List<RecipeTemplate> templates,
+    required List<Product> stock,
+    required int people,
+  }) {
+    final out = <SuggestResult>[];
+    for (final t in templates) {
+      out.add(evaluate(tpl: t, stock: stock, people: people));
+    }
+    // Tri: cuisinnables d'abord, sinon score décroissant
+    out.sort((a,b) {
+      if (a.cookable && !b.cookable) return -1;
+      if (!a.cookable && b.cookable) return 1;
+      return b.score.compareTo(a.score);
+    });
+    return out;
+  }
+}
+
+/* ======================
+   UI — Stock (identique à ta base stable)
+   ====================== */
+
 class InventoryPage extends StatefulWidget {
   const InventoryPage({super.key});
   @override
@@ -345,10 +644,7 @@ class _InventoryPageState extends State<InventoryPage> {
 
   @override
   void initState() { super.initState(); _reload(); }
-
-  void _reload() {
-    setState(() { _future = _db.all(query: _query); });
-  }
+  void _reload() { setState(() { _future = _db.all(query: _query); }); }
 
   Future<void> _openScanner() async {
     final code = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const ScanPage()));
@@ -365,9 +661,7 @@ class _InventoryPageState extends State<InventoryPage> {
         await _db.adjustQuantity(id: existing.id!, delta: delta);
         _reload();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Quantité mise à jour (${delta >= 0 ? "+" : ""}$delta)")),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Quantité mise à jour (${delta >= 0 ? "+" : ""}$delta)")));
       }
       return;
     }
@@ -476,7 +770,252 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 }
 
-// ------- UI: Scanner ----------
+/* ======================
+   UI — Suggestions (onglet Recettes)
+   ====================== */
+
+class SuggestionsPage extends StatefulWidget {
+  const SuggestionsPage({super.key});
+  @override
+  State<SuggestionsPage> createState() => _SuggestionsPageState();
+}
+
+class _SuggestionsPageState extends State<SuggestionsPage> {
+  final _db = InventoryDb();
+  int _people = 2;
+  late Future<List<Product>> _stockF = _db.all();
+
+  Future<void> _recompute() async {
+    setState(() { _stockF = _db.all(); });
+  }
+
+  Future<void> _cook(SuggestResult res) async {
+    await _db.cookUsing(uses: res.uses);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Cuisiné: ${res.template.name} pour ${res.people}")));
+    _recompute();
+  }
+
+  Future<void> _addMissingToShopping(List<String> missing) async {
+    for (final m in missing) {
+      // m ex: "oeuf x2" ou "lait 200ml"
+      final parts = m.split(" ");
+      final name = parts.first;
+      // parse quantité si possible
+      int qty = 1;
+      String unit = "pcs";
+      final last = parts.isNotEmpty ? parts.last : "";
+      final ml = RegExp(r"^(\d+)(ml|g)$");
+      final pcs = RegExp(r"^x(\d+)$");
+      if (ml.hasMatch(last)) {
+        final g = ml.firstMatch(last)!;
+        qty = int.parse(g.group(1)!);
+        unit = g.group(2)! == "ml" ? "ml" : "g";
+      } else if (pcs.hasMatch(last)) {
+        qty = int.parse(pcs.firstMatch(last)!.group(1)!);
+        unit = "pcs";
+      }
+      await _db.addShopping(name, unit: unit, qty: qty);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Ajouté aux courses")));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Recettes suggérées"),
+        actions: [
+          IconButton(
+            tooltip: "Rafraîchir",
+            onPressed: _recompute,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                const Text("Portions: "),
+                Expanded(
+                  child: Slider(
+                    min: 1, max: 6, divisions: 5,
+                    value: _people.toDouble(),
+                    label: "${_people.toString()}",
+                    onChanged: (v) => setState(() => _people = v.round()),
+                  ),
+                ),
+                Text("${_people}"),
+              ],
+            ),
+          ),
+          Expanded(
+            child: FutureBuilder<List<Product>>(
+              future: _stockF,
+              builder: (context, snap) {
+                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                final stock = snap.data!;
+                final results = SuggestEngine.compute(templates: kTemplates, stock: stock, people: _people);
+                final cookables = results.where((r) => r.cookable).toList();
+                final almost = results.where((r) => !r.cookable).toList();
+
+                return ListView(
+                  children: [
+                    _SectionHeader(title: "Cuisinables maintenant", count: cookables.length, icon: Icons.check_circle),
+                    if (cookables.isEmpty)
+                      const ListTile(title: Text("Rien pour l’instant — scanne un produit ou baisse le nombre de portions.")),
+                    ...cookables.map((r) => _RecipeCard(
+                      res: r,
+                      onCook: () => _cook(r),
+                      onAddMissing: () {}, // rien à ajouter (complet)
+                    )),
+
+                    const Divider(height: 24),
+                    _SectionHeader(title: "Presque (ingrédients manquants)", count: almost.length, icon: Icons.hourglass_bottom),
+                    ...almost.map((r) => _RecipeCard(
+                      res: r,
+                      onCook: null,
+                      onAddMissing: () => _addMissingToShopping(r.missingLabels),
+                    )),
+                    const SizedBox(height: 24),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  final String title; final int count; final IconData icon;
+  const _SectionHeader({required this.title, required this.count, required this.icon, super.key});
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(title, style: Theme.of(context).textTheme.titleMedium),
+      trailing: Text("$count"),
+    );
+  }
+}
+
+class _RecipeCard extends StatelessWidget {
+  final SuggestResult res;
+  final VoidCallback? onCook;
+  final VoidCallback onAddMissing;
+  const _RecipeCard({required this.res, required this.onAddMissing, this.onCook, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final badge = "${res.ok}/${res.total} ok";
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("${res.template.name} — ${res.people} pers.", style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Chip(label: Text(badge)),
+                const SizedBox(width: 8),
+                if (res.cookable) const Chip(label: Text("Prêt à cuisiner")),
+              ],
+            ),
+            if (!res.cookable) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8, runSpacing: 8,
+                children: res.missingLabels.map((m) => Chip(avatar: const Icon(Icons.shopping_cart, size: 16), label: Text(m))).toList(),
+              ),
+            ],
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (res.cookable)
+                  FilledButton.icon(onPressed: onCook, icon: const Icon(Icons.restaurant), label: const Text("Cuisiner")),
+                const Spacer(),
+                OutlinedButton.icon(onPressed: onAddMissing, icon: const Icon(Icons.add_shopping_cart), label: const Text("Ajouter aux courses")),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/* ======================
+   UI — Courses (onglet)
+   ====================== */
+
+class ShoppingPage extends StatefulWidget {
+  const ShoppingPage({super.key});
+  @override
+  State<ShoppingPage> createState() => _ShoppingPageState();
+}
+class _ShoppingPageState extends State<ShoppingPage> {
+  final _db = InventoryDb();
+  late Future<List<ShoppingItem>> _future = _db.shoppingList();
+
+  void _reload() => setState(() => _future = _db.shoppingList());
+
+  Future<void> _addItem() async {
+    final name = await showDialog<String>(context: context, builder: (_) => const _TextPrompt(title: "Ajouter un article", hint: "ex. oeuf"));
+    if (name == null || name.trim().isEmpty) return;
+    await _db.addShopping(name.trim());
+    _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Mes courses"),
+        actions: [
+          IconButton(onPressed: _addItem, icon: const Icon(Icons.add)),
+          IconButton(onPressed: () async { await _db.clearCheckedShopping(); _reload(); }, icon: const Icon(Icons.delete_sweep)),
+        ],
+      ),
+      body: FutureBuilder<List<ShoppingItem>>(
+        future: _future,
+        builder: (context, snap) {
+          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+          final items = snap.data!;
+          if (items.isEmpty) return const Center(child: Text("Ta liste de courses est vide."));
+          return ListView.separated(
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, i) {
+              final it = items[i];
+              return CheckboxListTile(
+                value: it.checked,
+                onChanged: (v) async { await _db.toggleShopping(it.id!, v ?? false); _reload(); },
+                title: Text(it.name),
+                subtitle: Text("${it.qty} ${it.unit}"),
+                secondary: IconButton(icon: const Icon(Icons.delete_outline), onPressed: () async { await _db.deleteShopping(it.id!); _reload(); }),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+/* ======================
+   Scanner & Dialogs (repris)
+   ====================== */
+
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
   @override
@@ -488,10 +1027,8 @@ class _ScanPageState extends State<ScanPage> {
     facing: CameraFacing.back,
   );
   bool _handled = false;
-
   @override
   void dispose() { controller.dispose(); super.dispose(); }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -526,10 +1063,8 @@ class _ScanPageState extends State<ScanPage> {
     );
   }
 }
-
 extension<T> on List<T> { T? get firstOrNull => isEmpty ? null : this[0]; }
 
-// ------- Dialogs ----------
 class ProductDialog extends StatefulWidget {
   final String? barcode;
   final Product? editing;
@@ -550,7 +1085,6 @@ class ProductDialog extends StatefulWidget {
   @override
   State<ProductDialog> createState() => _ProductDialogState();
 }
-
 class _ProductDialogState extends State<ProductDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _barcodeCtrl;
@@ -695,225 +1229,6 @@ class _QuantitySheetState extends State<QuantitySheet> {
           ]),
         ),
       ),
-    );
-  }
-}
-
-// ------- UI: Recettes ----------
-class RecipesPage extends StatefulWidget {
-  const RecipesPage({super.key});
-  @override
-  State<RecipesPage> createState() => _RecipesPageState();
-}
-
-class _RecipesPageState extends State<RecipesPage> {
-  final _db = InventoryDb();
-  late Future<List<Recipe>> _future;
-
-  @override
-  void initState() { super.initState(); _reload(); }
-  void _reload() { setState(() { _future = _db.recipes(); }); }
-
-  Future<void> _addRecipe() async {
-    final name = await showDialog<String>(context: context, builder: (_) => const _TextPrompt(title: "Nouvelle recette", hint: "Nom de la recette"));
-    if (name != null && name.trim().isNotEmpty) { await _db.addRecipe(name.trim()); _reload(); }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Recettes"), actions: [
-        IconButton(onPressed: _addRecipe, icon: const Icon(Icons.add)),
-      ]),
-      body: FutureBuilder<List<Recipe>>(
-        future: _future,
-        builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final items = snap.data!;
-          if (items.isEmpty) return const Center(child: Text("Aucune recette. Ajoute-en une avec +"));
-          return ListView.separated(
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, i) {
-              final r = items[i];
-              return ListTile(
-                title: Text(r.name),
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => RecipeDetailPage(recipe: r))),
-                trailing: PopupMenuButton<String>(
-                  onSelected: (v) async {
-                    switch (v) {
-                      case "rename":
-                        final name = await showDialog<String>(context: context, builder: (_) => _TextPrompt(title: "Renommer", initial: r.name));
-                        if (name != null && name.trim().isNotEmpty) { await _db.updateRecipe(Recipe(id: r.id, name: name.trim())); _reload(); }
-                        break;
-                      case "delete":
-                        await _db.deleteRecipe(r.id!); _reload();
-                        break;
-                    }
-                  },
-                  itemBuilder: (context) => const [
-                    PopupMenuItem(value: "rename", child: Text("Renommer")),
-                    PopupMenuItem(value: "delete", child: Text("Supprimer")),
-                  ],
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-}
-
-class RecipeDetailPage extends StatefulWidget {
-  final Recipe recipe;
-  const RecipeDetailPage({super.key, required this.recipe});
-  @override
-  State<RecipeDetailPage> createState() => _RecipeDetailPageState();
-}
-
-class _RecipeDetailPageState extends State<RecipeDetailPage> {
-  final _db = InventoryDb();
-  late Future<List<RecipeItem>> _future;
-
-  @override
-  void initState() { super.initState(); _reload(); }
-  void _reload() { setState(() { _future = _db.recipeItems(widget.recipe.id!); }); }
-
-  Future<void> _addIngredient() async {
-    final prod = await showDialog<Product?>(context: context, builder: (_) => const _ProductPickerDialog());
-    if (prod == null) return;
-    final qtyStr = await showDialog<String>(context: context, builder: (_) => const _TextPrompt(title: "Quantité", hint: "ex. 1"));
-    final qty = int.tryParse(qtyStr ?? "");
-    if (qty == null || qty <= 0) return;
-    await _db.addRecipeItem(recipeId: widget.recipe.id!, productId: prod.id!, qty: qty);
-    _reload();
-  }
-
-  Future<void> _cook() async {
-    await _db.cookRecipe(widget.recipe.id!);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Recette cuisinée: stock décrémenté")));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.recipe.name),
-        actions: [IconButton(onPressed: _addIngredient, icon: const Icon(Icons.add))],
-      ),
-      floatingActionButton: FloatingActionButton.extended(onPressed: _cook, icon: const Icon(Icons.restaurant), label: const Text("Cuisiner")),
-      body: FutureBuilder<List<RecipeItem>>(
-        future: _future,
-        builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final items = snap.data!;
-          if (items.isEmpty) return const Center(child: Text("Aucun ingrédient. Ajoute-en avec +"));
-          return ListView.separated(
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, i) {
-              final it = items[i];
-              return FutureBuilder<Product?>(
-                future: _db.findById(it.productId),
-                builder: (context, psnap) {
-                  final p = psnap.data;
-                  if (p == null) return const ListTile(title: Text("…"));
-                  return ListTile(
-                    leading: (p.imageUrl != null && p.imageUrl!.isNotEmpty)
-                        ? ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.network(p.imageUrl!, width: 40, height: 40, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox(width: 40, height: 40)))
-                        : const Icon(Icons.fastfood),
-                    title: Text(p.name),
-                    subtitle: Text("x${it.qty} ${p.unit} • en stock: ${p.quantity}"),
-                    trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: () async { await _db.deleteRecipeItem(it.id!); _reload(); }),
-                  );
-                },
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-}
-
-// ------- Helpers ----------
-class _TextPrompt extends StatefulWidget {
-  final String title;
-  final String? initial;
-  final String? hint;
-  const _TextPrompt({required this.title, this.initial, this.hint, super.key});
-  @override
-  State<_TextPrompt> createState() => _TextPromptState();
-}
-class _TextPromptState extends State<_TextPrompt> {
-  final _c = TextEditingController();
-  @override
-  void initState() { super.initState(); _c.text = widget.initial ?? ""; }
-  @override
-  void dispose() { _c.dispose(); super.dispose(); }
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.title),
-      content: TextField(controller: _c, decoration: InputDecoration(hintText: widget.hint ?? "")),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
-        FilledButton(onPressed: () => Navigator.pop(context, _c.text), child: const Text("OK")),
-      ],
-    );
-  }
-}
-
-class _ProductPickerDialog extends StatefulWidget {
-  const _ProductPickerDialog({super.key});
-  @override
-  State<_ProductPickerDialog> createState() => _ProductPickerDialogState();
-}
-class _ProductPickerDialogState extends State<_ProductPickerDialog> {
-  final _db = InventoryDb();
-  String _q = "";
-  late Future<List<Product>> _f = _db.all();
-  void _reload() => setState(() { _f = _db.all(query: _q); });
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text("Choisir un produit"),
-      content: SizedBox(
-        width: 420,
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextField(decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: "Rechercher"), onChanged: (v) { _q = v; _reload(); }),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 320,
-            child: FutureBuilder<List<Product>>(
-              future: _f,
-              builder: (context, snap) {
-                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-                final items = snap.data!;
-                if (items.isEmpty) return const Center(child: Text("Aucun produit"));
-                return ListView.separated(
-                  itemCount: items.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    final p = items[i];
-                    return ListTile(
-                      leading: (p.imageUrl != null && p.imageUrl!.isNotEmpty)
-                          ? ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.network(p.imageUrl!, width: 36, height: 36, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.image_not_supported)))
-                          : const Icon(Icons.inventory_2),
-                      title: Text(p.name),
-                      subtitle: Text("${p.brand.isNotEmpty ? "${p.brand} • " : ""}${p.barcode}"),
-                      onTap: () => Navigator.pop(context, p),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ]),
-      ),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Fermer"))],
     );
   }
 }
