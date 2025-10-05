@@ -776,36 +776,7 @@ class _ShoppingPageState extends State<ShoppingPage> {
    Scanner & Dialogs
    ====================== */
 
-class ScanPage extends StatefulWidget { const ScanPage({super.key}); @override State<ScanPage> createState() => _ScanPageState(); }
-class _ScanPageState extends State<ScanPage> {
-  final MobileScannerController controller = MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates, facing: CameraFacing.back);
-  bool _handled = false;
-  @override void dispose() { controller.dispose(); super.dispose(); }
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Scanner un code"), actions: [
-        IconButton(icon: const Icon(Icons.flash_on), onPressed: () => controller.toggleTorch()),
-        IconButton(icon: const Icon(Icons.cameraswitch), onPressed: () => controller.switchCamera()),
-      ]),
-      body: Stack(children: [
-        MobileScanner(
-          controller: controller,
-          onDetect: (capture) {
-            if (_handled) return;
-            final barcode = capture.barcodes.firstOrNull;
-            final value = barcode?.rawValue;
-            if (value != null && value.trim().isNotEmpty) {
-              _handled = true; Navigator.of(context).pop(value.trim());
-            }
-          },
-        ),
-        IgnorePointer(child: Center(child: Container(width: 260, height: 260, decoration: BoxDecoration(border: Border.all(color: Colors.white, width: 3), borderRadius: BorderRadius.circular(16))))),
-      ]),
-    );
-  }
-}
-extension<T> on List<T> { T? get firstOrNull => isEmpty ? null : this[0]; }
+
 
 class ProductDialog extends StatefulWidget {
   final String? barcode; final Product? editing; final String initialName; final String initialBrand; final String initialUnit; final String? initialImageUrl;
@@ -932,36 +903,7 @@ class _QuantitySheetState extends State<QuantitySheet> {
    Scanner
    ====================== */
 
-class ScanPage extends StatefulWidget { const ScanPage({super.key}); @override State<ScanPage> createState() => _ScanPageState(); }
-class _ScanPageState extends State<ScanPage> {
-  final MobileScannerController controller = MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates, facing: CameraFacing.back);
-  bool _handled = false;
-  @override void dispose() { controller.dispose(); super.dispose(); }
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text("Scanner un code"), actions: [
-        IconButton(icon: const Icon(Icons.flash_on), onPressed: () => controller.toggleTorch()),
-        IconButton(icon: const Icon(Icons.cameraswitch), onPressed: () => controller.switchCamera()),
-      ]),
-      body: Stack(children: [
-        MobileScanner(
-          controller: controller,
-          onDetect: (capture) {
-            if (_handled) return;
-            final barcode = capture.barcodes.firstOrNull;
-            final value = barcode?.rawValue;
-            if (value != null && value.trim().isNotEmpty) {
-              _handled = true; Navigator.of(context).pop(value.trim());
-            }
-          },
-        ),
-        IgnorePointer(child: Center(child: Container(width: 260, height: 260, decoration: BoxDecoration(border: Border.all(color: Colors.white, width: 3), borderRadius: BorderRadius.circular(16))))),
-      ]),
-    );
-  }
-}
-extension<T> on List<T> { T? get firstOrNull => isEmpty ? null : this[0]; }
+
 
 class _TextPrompt extends StatefulWidget { final String title; final String? initial; final String? hint; const _TextPrompt({required this.title, this.initial, this.hint, super.key}); @override State<_TextPrompt> createState() => _TextPromptState(); }
 class _TextPromptState extends State<_TextPrompt> {
@@ -977,3 +919,64 @@ class _TextPromptState extends State<_TextPrompt> {
     );
   }
 }
+
+class ScanPage extends StatefulWidget {
+  const ScanPage({super.key});
+  @override
+  State<ScanPage> createState() => _ScanPageState();
+}
+
+class _ScanPageState extends State<ScanPage> {
+  final MobileScannerController controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+    facing: CameraFacing.back,
+  );
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Scanner un code"),
+        actions: [
+          IconButton(icon: const Icon(Icons.flash_on), onPressed: () => controller.toggleTorch()),
+          IconButton(icon: const Icon(Icons.cameraswitch), onPressed: () => controller.switchCamera()),
+        ],
+      ),
+      body: Stack(
+        children: [
+          MobileScanner(
+            controller: controller,
+            onDetect: (capture) {
+              if (_handled) return;
+              final code = capture.barcodes.firstOrNull?.rawValue;
+              if (code != null && code.trim().isNotEmpty) {
+                _handled = true;
+                Navigator.of(context).pop(code.trim());
+              }
+            },
+          ),
+          IgnorePointer(
+            child: Center(
+              child: Container(
+                width: 260,
+                height: 260,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.white, width: 3),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
