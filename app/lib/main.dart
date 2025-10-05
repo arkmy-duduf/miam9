@@ -401,13 +401,16 @@ class OffClient {
       final brand = (p["brands"] ?? "") as String;
       final q = (p["quantity"] ?? "") as String;
       final image = (p["image_url"] ?? "") as String;
+      // Normalise en HTTPS pour Android 9+ (bloque le HTTP clair)
+      String img = image;
+      if (img.startsWith("http://")) { img = img.replaceFirst("http://", "https://"); }
       String unit = "pcs";
       final qLower = q.toLowerCase();
       if (qLower.contains("kg")) unit = "kg";
       else if (qLower.contains("g")) unit = "g";
       else if (qLower.contains("ml")) unit = "ml";
       else if (qLower.contains("l")) unit = "L"; // we keep unit=pcs unless L/ml for info
-      return OffAutofill(name: name, brand: brand, unit: unit, imageUrl: image.isEmpty ? null : image);
+      return OffAutofill(name: name, brand: brand, unit: unit, imageUrl: img.isEmpty ? null : img);
     } catch (_) {
       return null;
     }
@@ -1259,3 +1262,6 @@ class _TextPromptState extends State<_TextPrompt> {
     );
   }
 }
+
+
+
