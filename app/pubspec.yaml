@@ -1,0 +1,19 @@
+name: miam9
+publish_to: "none"
+description: "Inventory app with barcode scanning and local SQLite storage"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  mobile_scanner: ^5.2.3
+  sqflite: ^2.3.3+1
+  path: ^1.9.0
+  path_provider: ^2.1.4
+
+flutter:
+  uses-material-design: true
