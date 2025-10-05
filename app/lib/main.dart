@@ -1,13 +1,17 @@
 ﻿import "dart:async";
 import "dart:convert";
 import "package:flutter/material.dart";
+import "package:flutter/services.dart" show rootBundle;
 import "package:http/http.dart" as http;
 import "package:mobile_scanner/mobile_scanner.dart";
 import "package:path/path.dart" as p;
 import "package:path_provider/path_provider.dart";
 import "package:sqflite/sqflite.dart";
 
-// ================= App root =================
+/* =========================
+   Miam9 — Stock + OFF + Recettes (JSON) + Courses + Emplacement (Frigo/Congél/Placard)
+   ========================= */
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const Miam9App());
@@ -48,15 +52,35 @@ class _Miam9AppState extends State<Miam9App> {
   }
 }
 
-// ================= Models & DB =================
+/* ======================
+   Emplacement (stock area)
+   ====================== */
+
+enum StockLocation { fridge, freezer, pantry }
+String locToText(StockLocation l) => switch (l) { StockLocation.fridge => "frigo", StockLocation.freezer => "congel", StockLocation.pantry => "placard" };
+StockLocation textToLoc(String? s) {
+  switch ((s ?? "placard").toLowerCase()) {
+    case "frigo": return StockLocation.fridge;
+    case "congel": return StockLocation.freezer;
+    default: return StockLocation.pantry;
+  }
+}
+String locLabel(StockLocation l) => switch (l) { StockLocation.fridge => "Frigo", StockLocation.freezer => "Congélateur", StockLocation.pantry => "Placard" };
+IconData locIcon(StockLocation l) => switch (l) { StockLocation.fridge => Icons.kitchen, StockLocation.freezer => Icons.ac_unit, StockLocation.pantry => Icons.inventory_2 };
+
+/* ======================
+   Modèles & DB (v4: +location)
+   ====================== */
+
 class Product {
   final int? id;
   final String barcode;
   final String name;
   final String brand;
   final String unit;   // "pcs","g","kg","ml","L"
-  final int quantity;  // nombre ou quantité (arrondi)
+  final int quantity;  // entier
   final String? imageUrl;
+  final StockLocation location; // NEW
   final int createdAtMs;
 
   Product({
@@ -67,6 +91,7 @@ class Product {
     this.unit = "pcs",
     this.quantity = 0,
     this.imageUrl,
+    this.location = StockLocation.pantry,
     int? createdAtMs,
   }) : createdAtMs = createdAtMs ?? DateTime.now().millisecondsSinceEpoch;
 
@@ -78,41 +103,38 @@ class Product {
     String? unit,
     int? quantity,
     String? imageUrl,
+    StockLocation? location,
     int? createdAtMs,
-  }) {
-    return Product(
-      id: id ?? this.id,
-      barcode: barcode ?? this.barcode,
-      name: name ?? this.name,
-      brand: brand ?? this.brand,
-      unit: unit ?? this.unit,
-      quantity: quantity ?? this.quantity,
-      imageUrl: imageUrl ?? this.imageUrl,
-      createdAtMs: createdAtMs ?? this.createdAtMs,
-    );
-  }
+  }) => Product(
+    id: id ?? this.id,
+    barcode: barcode ?? this.barcode,
+    name: name ?? this.name,
+    brand: brand ?? this.brand,
+    unit: unit ?? this.unit,
+    quantity: quantity ?? this.quantity,
+    imageUrl: imageUrl ?? this.imageUrl,
+    location: location ?? this.location,
+    createdAtMs: createdAtMs ?? this.createdAtMs,
+  );
 
   Map<String, Object?> toMap() => {
-        "id": id,
-        "barcode": barcode,
-        "name": name,
-        "brand": brand,
-        "unit": unit,
-        "quantity": quantity,
-        "imageUrl": imageUrl,
-        "createdAtMs": createdAtMs,
-      };
+    "id": id, "barcode": barcode, "name": name, "brand": brand,
+    "unit": unit, "quantity": quantity, "imageUrl": imageUrl,
+    "location": locToText(location),
+    "createdAtMs": createdAtMs,
+  };
 
   static Product fromMap(Map<String, Object?> m) => Product(
-        id: m["id"] as int?,
-        barcode: m["barcode"] as String,
-        name: m["name"] as String,
-        brand: (m["brand"] ?? "") as String,
-        unit: (m["unit"] ?? "pcs") as String,
-        quantity: (m["quantity"] ?? 0) as int,
-        imageUrl: m["imageUrl"] as String?,
-        createdAtMs: (m["createdAtMs"] ?? 0) as int,
-      );
+    id: m["id"] as int?,
+    barcode: m["barcode"] as String,
+    name: m["name"] as String,
+    brand: (m["brand"] ?? "") as String,
+    unit: (m["unit"] ?? "pcs") as String,
+    quantity: (m["quantity"] ?? 0) as int,
+    imageUrl: m["imageUrl"] as String?,
+    location: textToLoc(m["location"] as String?),
+    createdAtMs: (m["createdAtMs"] ?? 0) as int,
+  );
 }
 
 class ShoppingItem {
@@ -135,8 +157,7 @@ class InventoryDb {
 
   Future<Database> get database async {
     if (_db != null) return _db!;
-    _db = await _open();
-    return _db!;
+    _db = await _open(); return _db!;
   }
 
   Future<Database> _open() async {
@@ -144,7 +165,7 @@ class InventoryDb {
     final path = p.join(dir.path, "inventory.db");
     return openDatabase(
       path,
-      version: 3,
+      version: 4, // v4: + products.location
       onCreate: (db, version) async {
         await db.execute("""
           CREATE TABLE products (
@@ -155,6 +176,7 @@ class InventoryDb {
             unit TEXT DEFAULT 'pcs',
             quantity INTEGER NOT NULL DEFAULT 0,
             imageUrl TEXT,
+            location TEXT DEFAULT 'placard',
             createdAtMs INTEGER NOT NULL
           );
         """);
@@ -185,32 +207,40 @@ class InventoryDb {
             );
           """);
         }
+        if (oldV < 4) {
+          await db.execute("ALTER TABLE products ADD COLUMN location TEXT DEFAULT 'placard';");
+          await db.execute("UPDATE products SET location = 'congel' WHERE LOWER(name) LIKE '%surgel%';");
+          await db.execute("UPDATE products SET location = 'frigo' WHERE LOWER(name) LIKE '%lait%' OR LOWER(name) LIKE '%yaourt%' OR LOWER(name) LIKE '%beurre%' OR LOWER(name) LIKE '%fromage%';");
+        }
       },
     );
   }
 
   // Products
-  Future<List<Product>> all({String? query}) async {
+  Future<List<Product>> all({String? query, StockLocation? filter}) async {
     final db = await database;
+    String? where; List<Object?>? args;
     if (query != null && query.trim().isNotEmpty) {
       final like = "%${query.trim()}%";
-      final rows = await db.query("products", where: "name LIKE ? OR barcode LIKE ?", whereArgs: [like, like], orderBy: "name COLLATE NOCASE");
-      return rows.map(Product.fromMap).toList();
+      where = "name LIKE ? OR barcode LIKE ?";
+      args = [like, like];
     }
-    final rows = await db.query("products", orderBy: "name COLLATE NOCASE");
+    if (filter != null) {
+      if (where == null) { where = "location = ?"; args = [locToText(filter)]; }
+      else { where = "($where) AND location = ?"; args!.add(locToText(filter)); }
+    }
+    final rows = await db.query("products", where: where, whereArgs: args, orderBy: "name COLLATE NOCASE");
     return rows.map(Product.fromMap).toList();
   }
   Future<Product?> findByBarcode(String barcode) async {
     final db = await database;
     final rows = await db.query("products", where: "barcode = ?", whereArgs: [barcode], limit: 1);
-    if (rows.isEmpty) return null;
-    return Product.fromMap(rows.first);
+    if (rows.isEmpty) return null; return Product.fromMap(rows.first);
   }
   Future<Product?> findById(int id) async {
     final db = await database;
     final rows = await db.query("products", where: "id = ?", whereArgs: [id], limit: 1);
-    if (rows.isEmpty) return null;
-    return Product.fromMap(rows.first);
+    if (rows.isEmpty) return null; return Product.fromMap(rows.first);
   }
   Future<Product> upsert(Product p) async {
     final db = await database;
@@ -222,8 +252,7 @@ class InventoryDb {
     await db.update("products", p.toMap(), where: "id = ?", whereArgs: [p.id]);
   }
   Future<void> delete(int id) async {
-    final db = await database;
-    await db.delete("products", where: "id = ?", whereArgs: [id]);
+    final db = await database; await db.delete("products", where: "id = ?", whereArgs: [id]);
   }
   Future<void> adjustQuantity({required int id, required int delta}) async {
     final db = await database;
@@ -237,34 +266,32 @@ class InventoryDb {
     return rows.map(ShoppingItem.fromMap).toList();
   }
   Future<void> addShopping(String name, {String unit = "pcs", int qty = 1}) async {
-    final db = await database;
-    await db.insert("shopping_items", {"name": name, "unit": unit, "qty": qty, "checked": 0});
+    final db = await database; await db.insert("shopping_items", {"name": name, "unit": unit, "qty": qty, "checked": 0});
   }
   Future<void> toggleShopping(int id, bool checked) async {
-    final db = await database;
-    await db.update("shopping_items", {"checked": checked ? 1 : 0}, where: "id = ?", whereArgs: [id]);
+    final db = await database; await db.update("shopping_items", {"checked": checked ? 1 : 0}, where: "id = ?", whereArgs: [id]);
   }
   Future<void> deleteShopping(int id) async {
-    final db = await database;
-    await db.delete("shopping_items", where: "id = ?", whereArgs: [id]);
+    final db = await database; await db.delete("shopping_items", where: "id = ?", whereArgs: [id]);
   }
   Future<void> clearCheckedShopping() async {
-    final db = await database;
-    await db.delete("shopping_items", where: "checked = 1");
+    final db = await database; await db.delete("shopping_items", where: "checked = 1");
   }
 
   Future<void> cookUsing({required List<_UseProduct> uses}) async {
-    final db = await database;
     for (final u in uses) {
       await adjustQuantity(id: u.productId, delta: -u.qtyToUse);
     }
   }
 }
 
-// ================= OFF autofill =================
+/* ======================
+   OFF autofill (+ catégories pour auto-emplacement)
+   ====================== */
 class OffAutofill {
   final String name; final String brand; final String unit; final String? imageUrl;
-  OffAutofill({this.name = "", this.brand = "", this.unit = "pcs", this.imageUrl});
+  final List<String> categories; // NEW
+  OffAutofill({this.name = "", this.brand = "", this.unit = "pcs", this.imageUrl, this.categories = const []});
 }
 class OffClient {
   static Future<OffAutofill?> fetch(String barcode) async {
@@ -288,154 +315,78 @@ class OffClient {
       else if (qLower.contains("g")) unit = "g";
       else if (qLower.contains("ml")) unit = "ml";
       else if (qLower.contains("l")) unit = "L";
-      return OffAutofill(name: name, brand: brand, unit: unit, imageUrl: img.isEmpty ? null : img);
+      // categories
+      final cats = <String>[];
+      final catTags = (p["categories_tags"] as List?) ?? [];
+      for (final c in catTags) { cats.add("$c"); }
+      final catsStr = (p["categories"] ?? "") as String;
+      if (cats.isEmpty && catsStr.isNotEmpty) {
+        cats.addAll(catsStr.split(",").map((e) => e.trim()));
+      }
+      return OffAutofill(name: name, brand: brand, unit: unit, imageUrl: img.isEmpty ? null : img, categories: cats);
     } catch (_) { return null; }
   }
 }
 
-// ================= Suggestions engine =================
-// Normalisation texte (lowercase + sans accents + pluriels simples)
-String _normalize(String s) {
-  final lower = s.toLowerCase();
-  const accents = "àáâäãåçèéêëìíîïñòóôöõùúûüýÿœæ";
-  const plain   = "aaaaaaceeeeiiiinoooouuuuyyoeae";
-  var out = StringBuffer();
-  for (int i=0;i<lower.length;i++) {
-    final ch = lower[i];
-    final idx = accents.indexOf(ch);
-    out.write(idx >= 0 ? plain[idx] : ch);
-  }
-  // pluriels simples (oeufs->oeuf, tomates->tomate)
-  return out.toString().replaceAll(RegExp(r"s\b"), "");
+/* ======================
+   Auto-détection d'emplacement
+   ====================== */
+
+StockLocation autoDetectLocation({required String name, List<String> categories = const []}) {
+  final s = _normalize(name);
+  final cats = categories.map(_normalize).join(" ");
+
+  // Freezer keywords
+  final isFrozen = s.contains("surgel") || s.contains("gelee") || s.contains("glace") || s.contains("frozen")
+                || cats.contains("surgel") || cats.contains("frozen");
+  if (isFrozen) return StockLocation.freezer;
+
+  // Fridge keywords
+  final isFridge = s.contains("yaourt") || s.contains("yogourt") || s.contains("fromage") || s.contains("beurre")
+                || s.contains("jambon") || s.contains("charcut") || s.contains("lait") || s.contains("creme") || s.contains("crème")
+                || s.contains("viande") || s.contains("poisson frais")
+                || cats.contains("fresh") || cats.contains("refriger");
+  if (isFridge) return StockLocation.fridge;
+
+  // Pantry defaults
+  return StockLocation.pantry;
 }
 
-bool _nameMatches(Product p, List<String> keywords) {
-  final n = _normalize("${p.name} ${p.brand}");
-  for (final kw in keywords) {
-    if (n.contains(_normalize(kw))) return true;
-  }
-  return false;
-}
-
-// unités & conversions
-int _toBase(String unit, int qty) {
-  switch (unit) {
-    case "kg": return qty * 1000;
-    case "L": return qty * 1000;
-    default: return qty;
-  }
-}
-int _fromBase(String unit, int baseQty) {
-  switch (unit) {
-    case "kg": return (baseQty / 1000).ceil();
-    case "L": return (baseQty / 1000).ceil();
-    default: return baseQty;
-  }
-}
-bool _compatibleUnits(String needUnit, String prodUnit) {
-  if (needUnit == "pcs" && prodUnit == "pcs") return true;
-  if (["g","kg"].contains(needUnit) && ["g","kg"].contains(prodUnit)) return true;
-  if (["ml","L"].contains(needUnit) && ["ml","L"].contains(prodUnit)) return true;
-  return false;
-}
+/* ======================
+   Catalogue recettes (JSON + fallback) — identique à avant
+   ====================== */
 
 class IngredientNeed {
-  final List<String> keywords; // synonymes
-  final double qty;            // pour servingsBase
-  final String unit;           // "pcs","g","kg","ml","L"
+  final List<String> keywords;
+  final double qty;
+  final String unit;
   final bool optional;
   const IngredientNeed(this.keywords, this.qty, this.unit, {this.optional = false});
+
+  factory IngredientNeed.fromJson(Map<String, dynamic> m) => IngredientNeed(
+    (m["keywords"] as List<dynamic>).map((e) => "$e").toList(),
+    (m["qty"] as num).toDouble(),
+    "${m["unit"]}",
+    optional: (m["optional"] ?? false) as bool,
+  );
+  Map<String, dynamic> toJson() => { "keywords": keywords, "qty": qty, "unit": unit, "optional": optional };
 }
+
 class RecipeTemplate {
   final String name;
   final int servingsBase;
   final List<IngredientNeed> needs;
   const RecipeTemplate(this.name, this.servingsBase, this.needs);
-}
-class _UseProduct {
-  final int productId;
-  final int qtyToUse; // exprimé dans l'unité du produit
-  const _UseProduct({required this.productId, required this.qtyToUse});
-}
-class SuggestResult {
-  final RecipeTemplate template;
-  final int people;
-  final int ok;
-  final int total;
-  final List<String> missingLabels;
-  final List<_UseProduct> uses;
-  const SuggestResult({required this.template, required this.people, required this.ok, required this.total, required this.missingLabels, required this.uses});
-  bool get cookable => ok == total;
-  double get score => total == 0 ? 0 : ok / total;
+
+  factory RecipeTemplate.fromJson(Map<String, dynamic> m) => RecipeTemplate(
+    "${m["name"]}", (m["servingsBase"] as num).toInt(),
+    (m["needs"] as List<dynamic>).map((e) => IngredientNeed.fromJson(e)).toList(),
+  );
+  Map<String, dynamic> toJson() => { "name": name, "servingsBase": servingsBase, "needs": needs.map((n) => n.toJson()).toList() };
 }
 
-class SuggestEngine {
-  static SuggestResult evaluate({required RecipeTemplate tpl, required List<Product> stock, required int people}) {
-    int ok = 0;
-    final total = tpl.needs.where((n) => !n.optional).length;
-    final missing = <String>[];
-    final uses = <_UseProduct>[];
-
-    for (final need in tpl.needs) {
-      final requiredQty = (need.qty * (people / tpl.servingsBase)).ceil();
-
-      // Trouver les candidats compatibles (mots-clés + unités)
-      final candidates = stock.where((p) => _nameMatches(p, need.keywords) && _compatibleUnits(need.unit, p.unit)).toList();
-      if (need.optional) {
-        if (candidates.isNotEmpty) {
-          // on prend le plus fourni
-          candidates.sort((a,b) => b.quantity.compareTo(a.quantity));
-          final p = candidates.first;
-          // conversion: exprime la quantité requise dans l'unité du produit
-          final reqInBase = _toBase(need.unit, requiredQty);
-          final reqInProd = _fromBase(p.unit, reqInBase);
-          if (p.quantity >= reqInProd && p.id != null) {
-            uses.add(_UseProduct(productId: p.id!, qtyToUse: reqInProd));
-          }
-        }
-        continue; // ne compte pas dans ok/total
-      }
-
-      if (candidates.isEmpty) {
-        final lbl = need.unit == "pcs" ? "x$requiredQty" : "$requiredQty${need.unit}";
-        missing.add("${need.keywords.first} $lbl");
-        continue;
-      }
-
-      candidates.sort((a,b) => b.quantity.compareTo(a.quantity));
-      final p = candidates.first;
-
-      final reqInBase = _toBase(need.unit, requiredQty);
-      final reqInProd = _fromBase(p.unit, reqInBase);
-
-      if (p.quantity >= reqInProd && p.id != null) {
-        ok += 1;
-        uses.add(_UseProduct(productId: p.id!, qtyToUse: reqInProd));
-      } else {
-        final lackInProd = (reqInProd - p.quantity).clamp(1, 1<<31);
-        final lbl = p.unit == "pcs" ? "x$lackInProd" : "$lackInProd${p.unit}";
-        missing.add("${need.keywords.first} $lbl");
-      }
-    }
-
-    return SuggestResult(template: tpl, people: people, ok: ok, total: total, missingLabels: missing, uses: uses);
-  }
-
-  static List<SuggestResult> compute({required List<RecipeTemplate> templates, required List<Product> stock, required int people}) {
-    final out = <SuggestResult>[];
-    for (final t in templates) {
-      out.add(evaluate(tpl: t, stock: stock, people: people));
-    }
-    out.sort((a,b) {
-      if (a.cookable != b.cookable) return a.cookable ? -1 : 1;
-      return b.score.compareTo(a.score);
-    });
-    return out;
-  }
-}
-
-// ================= Catalogue recettes (extensible) =================
-const List<RecipeTemplate> kTemplates = [
+/* Fallback minimal */
+const List<RecipeTemplate> kEmbeddedTemplates = [
   RecipeTemplate("Pâtes à la tomate", 2, [
     IngredientNeed(["pate","spaghetti","penne","coquillette","nouille"], 200, "g"),
     IngredientNeed(["tomate","passata","coulis","sauce tomate"], 200, "g"),
@@ -447,59 +398,112 @@ const List<RecipeTemplate> kTemplates = [
     IngredientNeed(["lait","creme","crème"], 50, "ml", optional: true),
     IngredientNeed(["fromage","gruyere","emmental","parmesan"], 40, "g", optional: true),
   ]),
-  RecipeTemplate("Crêpes", 2, [
-    IngredientNeed(["farine"], 150, "g"),
-    IngredientNeed(["lait"], 300, "ml"),
-    IngredientNeed(["oeuf","œuf"], 2, "pcs"),
-  ]),
-  RecipeTemplate("Poulet curry riz", 2, [
-    IngredientNeed(["poulet"], 300, "g"),
-    IngredientNeed(["riz"], 140, "g"),
-    IngredientNeed(["creme","coco","lait coco"], 150, "ml"),
-    IngredientNeed(["curry"], 10, "g", optional: true),
-  ]),
-  RecipeTemplate("Soupe de légumes", 2, [
-    IngredientNeed(["carotte"], 200, "g"),
-    IngredientNeed(["pomme de terre","patate"], 200, "g"),
-    IngredientNeed(["poireau","courgette","oignon"], 150, "g"),
-  ]),
-  RecipeTemplate("Gratin dauphinois", 2, [
-    IngredientNeed(["pomme de terre","patate"], 600, "g"),
-    IngredientNeed(["creme","lait"], 200, "ml"),
-    IngredientNeed(["ail"], 1, "pcs", optional: true),
-    IngredientNeed(["fromage"], 50, "g", optional: true),
-  ]),
-  RecipeTemplate("Salade thon maïs", 2, [
-    IngredientNeed(["thon"], 140, "g"),
-    IngredientNeed(["mais","maïs"], 140, "g"),
-    IngredientNeed(["salade","laitue","mache","mâche"], 100, "g", optional: true),
-  ]),
-  RecipeTemplate("Pâtes carbonara (FR)", 2, [
-    IngredientNeed(["pate","spaghetti","penne"], 200, "g"),
-    IngredientNeed(["lardons","bacon"], 150, "g"),
-    IngredientNeed(["creme","crème"], 150, "ml"),
-    IngredientNeed(["fromage","parmesan"], 40, "g", optional: true),
-  ]),
-  RecipeTemplate("Salade de riz", 2, [
-    IngredientNeed(["riz"], 150, "g"),
-    IngredientNeed(["thon","jambon"], 120, "g", optional: true),
-    IngredientNeed(["mais","poivron","olive"], 120, "g", optional: true),
-  ]),
 ];
 
-// ================= Stock UI =================
-class InventoryPage extends StatefulWidget {
-  const InventoryPage({super.key});
-  @override
-  State<InventoryPage> createState() => _InventoryPageState();
+class RecipeCatalog {
+  RecipeCatalog._();
+  static final RecipeCatalog instance = RecipeCatalog._();
+  Future<List<RecipeTemplate>> load() async {
+    try {
+      final raw = await rootBundle.loadString("assets/recipes.json");
+      final m = jsonDecode(raw) as Map<String, dynamic>;
+      final list = (m["recipes"] as List<dynamic>).map((e) => RecipeTemplate.fromJson(e)).toList();
+      final names = list.map((e) => e.name).toSet();
+      final merged = [...list];
+      for (final t in kEmbeddedTemplates) { if (!names.contains(t.name)) merged.add(t); }
+      return merged;
+    } catch (_) { return kEmbeddedTemplates; }
+  }
 }
+
+/* ======================
+   Moteur de suggestions (inchangé)
+   ====================== */
+
+String _normalize(String s) {
+  final lower = s.toLowerCase();
+  const accents = "àáâäãåçèéêëìíîïñòóôöõùúûüýÿœæ";
+  const plain   = "aaaaaaceeeeiiiinoooouuuuyyoeae";
+  var out = StringBuffer();
+  for (int i=0;i<lower.length;i++) {
+    final ch = lower[i];
+    final idx = accents.indexOf(ch);
+    out.write(idx >= 0 ? plain[idx] : ch);
+  }
+  return out.toString().replaceAll(RegExp(r"s\b"), "");
+}
+bool _nameMatches(Product p, List<String> keywords) {
+  final n = _normalize("${p.name} ${p.brand}");
+  for (final kw in keywords) { if (n.contains(_normalize(kw))) return true; }
+  return false;
+}
+int _toBase(String unit, int qty) => (unit == "kg" || unit == "L") ? qty * 1000 : qty;
+int _fromBase(String unit, int baseQty) => (unit == "kg" || unit == "L") ? (baseQty/1000).ceil() : baseQty;
+bool _compatibleUnits(String needUnit, String prodUnit) {
+  if (needUnit == "pcs" && prodUnit == "pcs") return true;
+  if (["g","kg"].contains(needUnit) && ["g","kg"].contains(prodUnit)) return true;
+  if (["ml","L"].contains(needUnit) && ["ml","L"].contains(prodUnit)) return true;
+  return false;
+}
+double _scale(double baseQty, int baseServ, int people) => baseQty * (people / baseServ);
+
+class _UseProduct { final int productId; final int qtyToUse; const _UseProduct({required this.productId, required this.qtyToUse}); }
+class SuggestResult {
+  final RecipeTemplate template; final int people; final int ok; final int total; final List<String> missingLabels; final List<_UseProduct> uses;
+  const SuggestResult({required this.template, required this.people, required this.ok, required this.total, required this.missingLabels, required this.uses});
+  bool get cookable => ok == total; double get score => total == 0 ? 0 : ok / total;
+}
+class SuggestEngine {
+  static SuggestResult evaluate({required RecipeTemplate tpl, required List<Product> stock, required int people}) {
+    int ok = 0; final total = tpl.needs.where((n) => !n.optional).length;
+    final missing = <String>[]; final uses = <_UseProduct>[];
+    for (final need in tpl.needs) {
+      final req = _scale(need.qty, tpl.servingsBase, people).ceil();
+      final candidates = stock.where((p) => _nameMatches(p, need.keywords) && _compatibleUnits(need.unit, p.unit)).toList();
+      if (need.optional) {
+        if (candidates.isNotEmpty) {
+          candidates.sort((a,b) => b.quantity.compareTo(a.quantity));
+          final p = candidates.first;
+          final reqBase = _toBase(need.unit, req);
+          final reqInProd = _fromBase(p.unit, reqBase);
+          if (p.id != null && p.quantity >= reqInProd) uses.add(_UseProduct(productId: p.id!, qtyToUse: reqInProd));
+        }
+        continue;
+      }
+      if (candidates.isEmpty) { missing.add("${need.keywords.first} ${need.unit == "pcs" ? "x$req" : "$req${need.unit}"}"); continue; }
+      candidates.sort((a,b) => b.quantity.compareTo(a.quantity));
+      final p = candidates.first;
+      final reqBase = _toBase(need.unit, req);
+      final reqInProd = _fromBase(p.unit, reqBase);
+      if (p.id != null && p.quantity >= reqInProd) { ok += 1; uses.add(_UseProduct(productId: p.id!, qtyToUse: reqInProd)); }
+      else {
+        final lack = (reqInProd - p.quantity).clamp(1, 1<<31);
+        missing.add("${need.keywords.first} ${p.unit == "pcs" ? "x$lack" : "$lack${p.unit}"}");
+      }
+    }
+    return SuggestResult(template: tpl, people: people, ok: ok, total: total, missingLabels: missing, uses: uses);
+  }
+  static List<SuggestResult> compute({required List<RecipeTemplate> templates, required List<Product> stock, required int people}) {
+    final out = <SuggestResult>[];
+    for (final t in templates) { out.add(evaluate(tpl: t, stock: stock, people: people)); }
+    out.sort((a,b) { if (a.cookable != b.cookable) return a.cookable ? -1 : 1; return b.score.compareTo(a.score); });
+    return out;
+  }
+}
+
+/* ======================
+   UI — Stock (filtre par emplacement)
+   ====================== */
+
+class InventoryPage extends StatefulWidget { const InventoryPage({super.key}); @override State<InventoryPage> createState() => _InventoryPageState(); }
 class _InventoryPageState extends State<InventoryPage> {
   final _db = InventoryDb();
   String _query = "";
+  StockLocation? _filter; // null = tous
   late Future<List<Product>> _future;
-  @override
-  void initState() { super.initState(); _reload(); }
-  void _reload() { setState(() { _future = _db.all(query: _query); }); }
+
+  @override void initState() { super.initState(); _reload(); }
+  void _reload() { setState(() { _future = _db.all(query: _query, filter: _filter); }); }
 
   Future<void> _openScanner() async {
     final code = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const ScanPage()));
@@ -512,14 +516,16 @@ class _InventoryPageState extends State<InventoryPage> {
       return;
     }
 
-    OffAutofill? off;
-    try { off = await OffClient.fetch(code); } catch (_) {}
+    OffAutofill? off; try { off = await OffClient.fetch(code); } catch (_) {}
+    // auto-loc
+    final autoLoc = autoDetectLocation(name: off?.name ?? "", categories: off?.categories ?? []);
     final created = await showDialog<Product?>(context: context, builder: (_) => ProductDialog(
       barcode: code,
       initialName: off?.name ?? "",
       initialBrand: off?.brand ?? "",
       initialUnit: off?.unit ?? "pcs",
       initialImageUrl: off?.imageUrl,
+      initialLocation: autoLoc,
     ));
     if (created != null) { await _db.upsert(created); _reload(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Produit ajouté au stock"))); }
   }
@@ -527,17 +533,35 @@ class _InventoryPageState extends State<InventoryPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Mon Stock"), actions: [
-        IconButton(tooltip: "Scanner", onPressed: _openScanner, icon: const Icon(Icons.qr_code_scanner_rounded)),
-      ]),
+      appBar: AppBar(
+        title: const Text("Mon Stock"),
+        actions: [IconButton(tooltip: "Scanner", onPressed: _openScanner, icon: const Icon(Icons.qr_code_scanner_rounded))],
+      ),
       floatingActionButton: FloatingActionButton.extended(onPressed: _openScanner, icon: const Icon(Icons.qr_code_scanner), label: const Text("Scanner")),
       body: Column(children: [
         Padding(
           padding: const EdgeInsets.all(12),
-          child: TextField(
-            decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: "Rechercher par nom ou code-barres", border: OutlineInputBorder()),
-            onChanged: (v) { _query = v; _reload(); },
-          ),
+          child: Column(children: [
+            TextField(
+              decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: "Rechercher par nom ou code-barres", border: OutlineInputBorder()),
+              onChanged: (v) { _query = v; _reload(); },
+            ),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, children: [
+              FilterChip(
+                label: const Text("Tous"),
+                selected: _filter == null,
+                onSelected: (_) { _filter = null; _reload(); },
+              ),
+              for (final l in StockLocation.values)
+                FilterChip(
+                  avatar: Icon(locIcon(l), size: 16),
+                  label: Text(locLabel(l)),
+                  selected: _filter == l,
+                  onSelected: (_) { _filter = l; _reload(); },
+                ),
+            ]),
+          ]),
         ),
         Expanded(
           child: FutureBuilder<List<Product>>(
@@ -551,19 +575,14 @@ class _InventoryPageState extends State<InventoryPage> {
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (context, i) {
                   final p = items[i];
-                  Widget leading;
-                  if (p.imageUrl != null && p.imageUrl!.isNotEmpty) {
-                    leading = ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: Image.network(p.imageUrl!, width: 40, height: 40, fit: BoxFit.cover, errorBuilder: (_, __, ___) => CircleAvatar(child: Text(p.quantity.toString()))),
-                    );
-                  } else {
-                    leading = CircleAvatar(child: Text(p.quantity.toString()));
-                  }
+                  final leading = (p.imageUrl != null && p.imageUrl!.isNotEmpty)
+                      ? ClipRRect(borderRadius: BorderRadius.circular(20), child: Image.network(p.imageUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => CircleAvatar(child: Text(p.quantity.toString()))))
+                      : CircleAvatar(child: Text(p.quantity.toString()));
                   return ListTile(
                     leading: leading,
                     title: Text(p.name),
-                    subtitle: Text("${p.brand.isNotEmpty ? "${p.brand} • " : ""}${p.barcode}"),
+                    subtitle: Text("${p.brand.isNotEmpty ? "${p.brand} • " : ""}${p.barcode} • ${locLabel(p.location)}"),
                     trailing: PopupMenuButton<String>(
                       onSelected: (value) async {
                         switch (value) {
@@ -595,115 +614,91 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 }
 
-// ================= Suggestions UI =================
-class SuggestionsPage extends StatefulWidget {
-  const SuggestionsPage({super.key});
-  @override
-  State<SuggestionsPage> createState() => _SuggestionsPageState();
-}
+/* ======================
+   UI — Suggestions (idem)
+   ====================== */
+
+class SuggestionsPage extends StatefulWidget { const SuggestionsPage({super.key}); @override State<SuggestionsPage> createState() => _SuggestionsPageState(); }
 class _SuggestionsPageState extends State<SuggestionsPage> {
   final _db = InventoryDb();
   int _people = 2;
   late Future<List<Product>> _stockF = _db.all();
-
-  void _reload() => setState(() => _stockF = _db.all());
+  late Future<List<RecipeTemplate>> _tplF = RecipeCatalog.instance.load();
+  void _reload() { setState(() { _stockF = _db.all(); _tplF = RecipeCatalog.instance.load(); }); }
 
   Future<void> _cook(SuggestResult res) async {
     await _db.cookUsing(uses: res.uses);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Cuisiné: ${res.template.name} pour ${res.people}")));
-    _reload();
+    if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Cuisiné: ${res.template.name} pour ${res.people}"))); _reload();
   }
-
   Future<void> _addMissingToShopping(List<String> missing) async {
     for (final m in missing) {
-      // "oeuf x2" / "lait 200ml" / "riz 150g"
-      final parts = m.split(" ");
-      final name = parts.first;
+      final parts = m.split(" "); final name = parts.first;
       int qty = 1; String unit = "pcs";
       if (parts.length >= 2) {
         final last = parts.last;
-        final r1 = RegExp(r"^x(\d+)$");
-        final r2 = RegExp(r"^(\d+)(g|ml)$");
-        final r3 = RegExp(r"^(\d+)(kg|L)$");
-        if (r1.hasMatch(last)) {
-          qty = int.parse(r1.firstMatch(last)!.group(1)!); unit = "pcs";
-        } else if (r2.hasMatch(last)) {
-          qty = int.parse(r2.firstMatch(last)!.group(1)!); unit = r2.firstMatch(last)!.group(2)!;
-        } else if (r3.hasMatch(last)) {
-          qty = int.parse(r3.firstMatch(last)!.group(1)!); unit = r3.firstMatch(last)!.group(2)!;
-        }
+        final r1 = RegExp(r"^x(\d+)$"); final r2 = RegExp(r"^(\d+)(g|ml)$"); final r3 = RegExp(r"^(\d+)(kg|L)$");
+        if (r1.hasMatch(last)) { qty = int.parse(r1.firstMatch(last)!.group(1)!); unit = "pcs"; }
+        else if (r2.hasMatch(last)) { qty = int.parse(r2.firstMatch(last)!.group(1)!); unit = r2.firstMatch(last)!.group(2)!; }
+        else if (r3.hasMatch(last)) { qty = int.parse(r3.firstMatch(last)!.group(1)!); unit = r3.firstMatch(last)!.group(2)!; }
       }
       await _db.addShopping(name, unit: unit, qty: qty);
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Ajouté aux courses")));
+    if (!mounted) return; ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Ajouté aux courses")));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Recettes suggérées"), actions: [
-        IconButton(tooltip: "Rafraîchir", onPressed: _reload, icon: const Icon(Icons.refresh)),
-      ]),
+      appBar: AppBar(title: const Text("Recettes suggérées"), actions: [IconButton(tooltip: "Rafraîchir", onPressed: _reload, icon: const Icon(Icons.refresh))]),
       body: Column(children: [
         Padding(
           padding: const EdgeInsets.all(12),
           child: Row(children: [
             const Text("Portions: "),
-            Expanded(
-              child: Slider(min: 1, max: 6, divisions: 5, value: _people.toDouble(), label: "$_people", onChanged: (v) => setState(() => _people = v.round())),
-            ),
+            Expanded(child: Slider(min: 1, max: 6, divisions: 5, value: _people.toDouble(), label: "$_people", onChanged: (v) => setState(() => _people = v.round()))),
             Text("$_people"),
           ]),
         ),
         Expanded(
-          child: FutureBuilder<List<Product>>(
-            future: _stockF,
-            builder: (context, snap) {
-              if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-              final stock = snap.data!;
-              final results = SuggestEngine.compute(templates: kTemplates, stock: stock, people: _people);
-              final cookables = results.where((r) => r.cookable).toList();
-              final almost = results.where((r) => !r.cookable).toList();
-
-              return ListView(
-                children: [
-                  _SectionHeader(title: "Cuisinables maintenant", count: cookables.length, icon: Icons.check_circle),
-                  if (cookables.isEmpty) const ListTile(title: Text("Rien pour l’instant — scanne un produit ou baisse le nombre de portions.")),
-                  ...cookables.map((r) => _RecipeCard(res: r, onCook: () => _cook(r), onAddMissing: null)),
-
-                  const Divider(height: 24),
-                  _SectionHeader(title: "Presque (ingrédients manquants)", count: almost.length, icon: Icons.hourglass_bottom),
-                  ...almost.map((r) => _RecipeCard(res: r, onCook: null, onAddMissing: () => _addMissingToShopping(r.missingLabels))),
-                  const SizedBox(height: 24),
-                ],
+          child: FutureBuilder<List<RecipeTemplate>>(
+            future: _tplF,
+            builder: (context, tplSnap) {
+              if (!tplSnap.hasData) return const Center(child: CircularProgressIndicator());
+              final templates = tplSnap.data!;
+              return FutureBuilder<List<Product>>(
+                future: _stockF,
+                builder: (context, stockSnap) {
+                  if (!stockSnap.hasData) return const Center(child: CircularProgressIndicator());
+                  final stock = stockSnap.data!;
+                  final results = SuggestEngine.compute(templates: templates, stock: stock, people: _people);
+                  final cookables = results.where((r) => r.cookable).toList();
+                  final almost = results.where((r) => !r.cookable).toList();
+                  return ListView(children: [
+                    _SectionHeader(title: "Cuisinables maintenant", count: cookables.length, icon: Icons.check_circle),
+                    if (cookables.isEmpty) const ListTile(title: Text("Rien pour l’instant — scanne un produit ou baisse le nombre de portions.")),
+                    ...cookables.map((r) => _RecipeCard(res: r, onCook: () => _cook(r), onAddMissing: null)),
+                    const Divider(height: 24),
+                    _SectionHeader(title: "Presque (ingrédients manquants)", count: almost.length, icon: Icons.hourglass_bottom),
+                    ...almost.map((r) => _RecipeCard(res: r, onCook: null, onAddMissing: () => _addMissingToShopping(r.missingLabels))),
+                    const SizedBox(height: 24),
+                  ]);
+                },
               );
             },
           ),
-        )
+        ),
       ]),
     );
   }
 }
-
-class _SectionHeader extends StatelessWidget {
-  final String title; final int count; final IconData icon;
+class _SectionHeader extends StatelessWidget { final String title; final int count; final IconData icon;
   const _SectionHeader({required this.title, required this.count, required this.icon, super.key});
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(leading: Icon(icon), title: Text(title, style: Theme.of(context).textTheme.titleMedium), trailing: Text("$count"));
-  }
+  @override Widget build(BuildContext context) { return ListTile(leading: Icon(icon), title: Text(title, style: Theme.of(context).textTheme.titleMedium), trailing: Text("$count")); }
 }
-
 class _RecipeCard extends StatelessWidget {
-  final SuggestResult res;
-  final VoidCallback? onCook;
-  final VoidCallback? onAddMissing;
+  final SuggestResult res; final VoidCallback? onCook; final VoidCallback? onAddMissing;
   const _RecipeCard({required this.res, this.onCook, this.onAddMissing, super.key});
-
-  @override
-  Widget build(BuildContext context) {
+  @override Widget build(BuildContext context) {
     final badge = "${res.ok}/${res.total} ok";
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -712,11 +707,7 @@ class _RecipeCard extends StatelessWidget {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text("${res.template.name} — ${res.people} pers.", style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
-          Row(children: [
-            Chip(label: Text(badge)),
-            const SizedBox(width: 8),
-            if (res.cookable) const Chip(label: Text("Prêt à cuisiner")),
-          ]),
+          Row(children: [Chip(label: Text(badge)), const SizedBox(width: 8), if (res.cookable) const Chip(label: Text("Prêt à cuisiner"))]),
           if (!res.cookable) ...[
             const SizedBox(height: 8),
             Wrap(spacing: 8, runSpacing: 8, children: res.missingLabels.map((m) => Chip(avatar: const Icon(Icons.shopping_cart, size: 16), label: Text(m))).toList()),
@@ -733,12 +724,11 @@ class _RecipeCard extends StatelessWidget {
   }
 }
 
-// ================= Courses UI =================
-class ShoppingPage extends StatefulWidget {
-  const ShoppingPage({super.key});
-  @override
-  State<ShoppingPage> createState() => _ShoppingPageState();
-}
+/* ======================
+   UI — Courses
+   ====================== */
+
+class ShoppingPage extends StatefulWidget { const ShoppingPage({super.key}); @override State<ShoppingPage> createState() => _ShoppingPageState(); }
 class _ShoppingPageState extends State<ShoppingPage> {
   final _db = InventoryDb();
   late Future<List<ShoppingItem>> _future = _db.shoppingList();
@@ -747,8 +737,7 @@ class _ShoppingPageState extends State<ShoppingPage> {
   Future<void> _addItem() async {
     final name = await showDialog<String>(context: context, builder: (_) => const _TextPrompt(title: "Ajouter un article", hint: "ex. oeuf"));
     if (name == null || name.trim().isEmpty) return;
-    await _db.addShopping(name.trim());
-    _reload();
+    await _db.addShopping(name.trim()); _reload();
   }
 
   @override
@@ -765,8 +754,7 @@ class _ShoppingPageState extends State<ShoppingPage> {
           final items = snap.data!;
           if (items.isEmpty) return const Center(child: Text("Ta liste de courses est vide."));
           return ListView.separated(
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemCount: items.length, separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final it = items[i];
               return CheckboxListTile(
@@ -784,7 +772,10 @@ class _ShoppingPageState extends State<ShoppingPage> {
   }
 }
 
-// ================= Scanner & Dialogs =================
+/* ======================
+   Scanner & Dialogs
+   ====================== */
+
 class ScanPage extends StatefulWidget { const ScanPage({super.key}); @override State<ScanPage> createState() => _ScanPageState(); }
 class _ScanPageState extends State<ScanPage> {
   final MobileScannerController controller = MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates, facing: CameraFacing.back);
@@ -805,8 +796,7 @@ class _ScanPageState extends State<ScanPage> {
             final barcode = capture.barcodes.firstOrNull;
             final value = barcode?.rawValue;
             if (value != null && value.trim().isNotEmpty) {
-              _handled = true;
-              Navigator.of(context).pop(value.trim());
+              _handled = true; Navigator.of(context).pop(value.trim());
             }
           },
         ),
@@ -818,23 +808,16 @@ class _ScanPageState extends State<ScanPage> {
 extension<T> on List<T> { T? get firstOrNull => isEmpty ? null : this[0]; }
 
 class ProductDialog extends StatefulWidget {
-  final String? barcode;
-  final Product? editing;
-  final String initialName;
-  final String initialBrand;
-  final String initialUnit;
-  final String? initialImageUrl;
-  const ProductDialog({super.key, this.barcode, this.editing, this.initialName = "", this.initialBrand = "", this.initialUnit = "pcs", this.initialImageUrl});
+  final String? barcode; final Product? editing; final String initialName; final String initialBrand; final String initialUnit; final String? initialImageUrl;
+  final StockLocation? initialLocation;
+  const ProductDialog({super.key, this.barcode, this.editing, this.initialName = "", this.initialBrand = "", this.initialUnit = "pcs", this.initialImageUrl, this.initialLocation});
   @override State<ProductDialog> createState() => _ProductDialogState();
 }
 class _ProductDialogState extends State<ProductDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _barcodeCtrl;
-  final _nameCtrl = TextEditingController();
-  final _brandCtrl = TextEditingController();
-  final _unitCtrl = TextEditingController(text: "pcs");
-  final _qtyCtrl = TextEditingController(text: "1");
-  final _imgCtrl = TextEditingController();
+  final _nameCtrl = TextEditingController(); final _brandCtrl = TextEditingController(); final _unitCtrl = TextEditingController(text: "pcs"); final _qtyCtrl = TextEditingController(text: "1"); final _imgCtrl = TextEditingController();
+  StockLocation _loc = StockLocation.pantry;
 
   @override
   void initState() {
@@ -843,13 +826,13 @@ class _ProductDialogState extends State<ProductDialog> {
     if (widget.editing != null) {
       final p = widget.editing!;
       _nameCtrl.text = p.name; _brandCtrl.text = p.brand; _unitCtrl.text = p.unit; _qtyCtrl.text = p.quantity.toString(); _imgCtrl.text = p.imageUrl ?? "";
+      _loc = p.location;
     } else {
       _nameCtrl.text = widget.initialName; _brandCtrl.text = widget.initialBrand; _unitCtrl.text = widget.initialUnit.isEmpty ? "pcs" : widget.initialUnit; _imgCtrl.text = widget.initialImageUrl ?? "";
+      _loc = widget.initialLocation ?? autoDetectLocation(name: _nameCtrl.text);
     }
   }
-
-  @override
-  void dispose() { _barcodeCtrl.dispose(); _nameCtrl.dispose(); _brandCtrl.dispose(); _unitCtrl.dispose(); _qtyCtrl.dispose(); _imgCtrl.dispose(); super.dispose(); }
+  @override void dispose() { _barcodeCtrl.dispose(); _nameCtrl.dispose(); _brandCtrl.dispose(); _unitCtrl.dispose(); _qtyCtrl.dispose(); _imgCtrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -867,21 +850,22 @@ class _ProductDialogState extends State<ProductDialog> {
               ),
             TextFormField(controller: _barcodeCtrl, decoration: const InputDecoration(labelText: "Code-barres"), validator: (v) => (v == null || v.trim().isEmpty) ? "Champ requis" : null),
             const SizedBox(height: 8),
-            TextFormField(controller: _nameCtrl, decoration: const InputDecoration(labelText: "Nom du produit"), validator: (v) => (v == null || v.trim().isEmpty) ? "Champ requis" : null),
+            TextFormField(controller: _nameCtrl, decoration: const InputDecoration(labelText: "Nom du produit"), validator: (v) => (v == null || v.trim().isEmpty) ? "Champ requis" : null, onChanged: (v){ setState(() { _loc = autoDetectLocation(name: v); }); }),
             const SizedBox(height: 8),
             TextFormField(controller: _brandCtrl, decoration: const InputDecoration(labelText: "Marque (optionnel)")),
             const SizedBox(height: 8),
             Row(children: [
               Expanded(child: TextFormField(controller: _unitCtrl, decoration: const InputDecoration(labelText: "Unité (pcs, g, kg, ml, L)"))),
               const SizedBox(width: 12),
-              Expanded(
-                child: TextFormField(
-                  controller: _qtyCtrl, decoration: const InputDecoration(labelText: "Quantité"),
-                  keyboardType: TextInputType.number,
-                  validator: (v) { final n = int.tryParse(v ?? ""); if (n == null || n < 0) return "Nombre entier requis"; return null; },
-                ),
-              ),
+              Expanded(child: TextFormField(controller: _qtyCtrl, decoration: const InputDecoration(labelText: "Quantité"), keyboardType: TextInputType.number, validator: (v) { final n = int.tryParse(v ?? ""); if (n == null || n < 0) return "Nombre entier requis"; return null; })),
             ]),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<StockLocation>(
+              value: _loc,
+              decoration: const InputDecoration(labelText: "Emplacement"),
+              items: StockLocation.values.map((l) => DropdownMenuItem(value: l, child: Row(children: [Icon(locIcon(l), size: 18), const SizedBox(width: 8), Text(locLabel(l))]))).toList(),
+              onChanged: (v) => setState(() => _loc = v ?? _loc),
+            ),
             const SizedBox(height: 8),
             TextFormField(controller: _imgCtrl, decoration: const InputDecoration(labelText: "Image URL (optionnel)")),
           ]),
@@ -900,6 +884,7 @@ class _ProductDialogState extends State<ProductDialog> {
               unit: _unitCtrl.text.trim().isEmpty ? "pcs" : _unitCtrl.text.trim(),
               quantity: int.parse(_qtyCtrl.text.trim()),
               imageUrl: _imgCtrl.text.trim().isEmpty ? null : _imgCtrl.text.trim(),
+              location: _loc,
             );
             Navigator.pop(context, p);
           },
@@ -943,11 +928,42 @@ class _QuantitySheetState extends State<QuantitySheet> {
   }
 }
 
-class _TextPrompt extends StatefulWidget {
-  final String title; final String? initial; final String? hint;
-  const _TextPrompt({required this.title, this.initial, this.hint, super.key});
-  @override State<_TextPrompt> createState() => _TextPromptState();
+/* ======================
+   Scanner
+   ====================== */
+
+class ScanPage extends StatefulWidget { const ScanPage({super.key}); @override State<ScanPage> createState() => _ScanPageState(); }
+class _ScanPageState extends State<ScanPage> {
+  final MobileScannerController controller = MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates, facing: CameraFacing.back);
+  bool _handled = false;
+  @override void dispose() { controller.dispose(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Scanner un code"), actions: [
+        IconButton(icon: const Icon(Icons.flash_on), onPressed: () => controller.toggleTorch()),
+        IconButton(icon: const Icon(Icons.cameraswitch), onPressed: () => controller.switchCamera()),
+      ]),
+      body: Stack(children: [
+        MobileScanner(
+          controller: controller,
+          onDetect: (capture) {
+            if (_handled) return;
+            final barcode = capture.barcodes.firstOrNull;
+            final value = barcode?.rawValue;
+            if (value != null && value.trim().isNotEmpty) {
+              _handled = true; Navigator.of(context).pop(value.trim());
+            }
+          },
+        ),
+        IgnorePointer(child: Center(child: Container(width: 260, height: 260, decoration: BoxDecoration(border: Border.all(color: Colors.white, width: 3), borderRadius: BorderRadius.circular(16))))),
+      ]),
+    );
+  }
 }
+extension<T> on List<T> { T? get firstOrNull => isEmpty ? null : this[0]; }
+
+class _TextPrompt extends StatefulWidget { final String title; final String? initial; final String? hint; const _TextPrompt({required this.title, this.initial, this.hint, super.key}); @override State<_TextPrompt> createState() => _TextPromptState(); }
 class _TextPromptState extends State<_TextPrompt> {
   final _c = TextEditingController();
   @override void initState() { super.initState(); _c.text = widget.initial ?? ""; }
@@ -957,10 +973,7 @@ class _TextPromptState extends State<_TextPrompt> {
     return AlertDialog(
       title: Text(widget.title),
       content: TextField(controller: _c, decoration: InputDecoration(hintText: widget.hint ?? "")),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
-        FilledButton(onPressed: () => Navigator.pop(context, _c.text.trim()), child: const Text("OK")),
-      ],
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")), FilledButton(onPressed: () => Navigator.pop(context, _c.text.trim()), child: const Text("OK"))],
     );
   }
 }
